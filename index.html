@@ -1,993 +1,777 @@
-import { useState, useEffect, useRef } from "react";
-import * as Papa from "papaparse";
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SideShift P&L Tracker</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Inter',-apple-system,sans-serif;background:#F4F6F8}
+    input:focus,textarea:focus{border-color:#218AC3!important;outline:none;box-shadow:0 0 0 3px #EFF6FB}
+    input::placeholder,textarea::placeholder{color:#9CA3AF}
+    @keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react,env">
+    const { useState, useEffect, useRef } = React;
+    const Papa = window.Papa;
 
-const B = {
-  bg:"#F4F6F8", white:"#FFFFFF", card:"#FFFFFF", border:"#E5E7EB", border2:"#D1D5DB",
-  blue:"#218AC3", blueLo:"#EFF6FB", blueMid:"#D3E7EE",
-  black:"#111111", grey1:"#374151", grey2:"#6B7280", grey3:"#9CA3AF", grey4:"#E5E7EB",
-  green:"#16a34a", greenLo:"#F0FDF4", yellow:"#d97706", yellowLo:"#FFFBEB",
-  red:"#dc2626", redLo:"#FEF2F2",
-};
-const SC = { Active:B.green, Completed:B.blue, Paused:B.yellow };
-const SB = { Active:B.greenLo, Completed:B.blueLo, Paused:B.yellowLo };
-const TABS = ["Overview","Campaigns","Add / Edit"];
-const STATUSES = ["Active","Completed","Paused"];
-const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-
-const fmt  = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(n||0);
-const fmtD = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2,maximumFractionDigits:2}).format(n||0);
-const fmtN = n => new Intl.NumberFormat("en-US",{maximumFractionDigits:0}).format(n||0);
-const pct  = n => (isNaN(n)||!isFinite(n))?"0%":`${n.toFixed(1)}%`;
-const num  = v => parseFloat(String(v).replace(/[^0-9.]/g,""))||0;
-const mc   = m => m>=50?B.green:m>=25?B.yellow:m===0?B.grey3:B.red;
-const mcBg = m => m>=50?B.greenLo:m>=25?B.yellowLo:m===0?"transparent":B.redLo;
-
-// Derive campaign status from periods
-const derivedStatus = periods => {
-  if(!periods||periods.length===0) return "Active";
-  const statuses = periods.map(p=>p.status||"Active");
-  if(statuses.some(s=>s==="Active")) return "Active";
-  if(statuses.every(s=>s==="Completed")) return "Completed";
-  return "Paused";
-};
-
-const defaultPeriod = (index=0, prev=null) => {
-  const now = new Date();
-  const d = new Date(now.getFullYear(), now.getMonth() + index, 1);
-  return {
-    id: Date.now() + index + Math.random(),
-    startDate: d.toISOString().slice(0,10),
-    endDate: new Date(d.getFullYear(), d.getMonth()+1, 0).toISOString().slice(0,10),
-    revenue: prev?.revenue || "",
-    creatorSpend:"", sparkSpend:"",
-    affiliates:[],
-    targetCPM: prev?.targetCPM || "",
-    totalViews:"",
-    notes:"",
-    status:"Active",
-  };
-};
-
-const defaultCampaign = () => ({
-  id:Date.now(), name:"", client:"",
-  analyticsUrl:"", affiliateAnalyticsUrl:"",
-  findings:"", future:"", improvements:"",
-  creatorCSV:null, sparkCSV:null, sparkAdsCSV:null, invoices:[], otherFiles:[],
-  periods:[defaultPeriod(0)],
-});
-
-const periodCalc = p => {
-  const rev = num(p.revenue);
-  const cr  = num(p.creatorSpend);
-  const sp  = num(p.sparkSpend);
-  const af  = (p.affiliates||[]).reduce((s,a)=>s+num(a.amount),0);
-  const spend  = cr+sp+af;
-  const profit = rev-spend;
-  const margin = rev>0?(profit/rev)*100:0;
-  const views  = num(p.totalViews);
-  const activeCPM = views>0 ? (rev/(views/1000)) : 0;
-  const goalViews = num(p.targetCPM)>0 ? Math.round(rev/num(p.targetCPM)*1000) : 0;
-  return { rev, cr, sp, af, spend, profit, margin, views, activeCPM, goalViews };
-};
-
-const campaignTotals = c => {
-  const periods = c.periods||[];
-  const agg = periods.reduce((a,p)=>{
-    const t=periodCalc(p);
-    a.rev+=t.rev; a.cr+=t.cr; a.sp+=t.sp; a.af+=t.af;
-    a.spend+=t.spend; a.profit+=t.profit; a.views+=t.views;
-    return a;
-  },{rev:0,cr:0,sp:0,af:0,spend:0,profit:0,views:0});
-  agg.margin  = agg.rev>0?(agg.profit/agg.rev)*100:0;
-  agg.activeCPM = agg.views>0?(agg.rev/(agg.views/1000)):0;
-  return agg;
-};
-
-// ── CurrencyInput ─────────────────────────────────────
-function CurrencyInput({ value, onChange, placeholder, style }) {
-  const [focused,setFocused]=useState(false);
-  const raw = String(value||"").replace(/[^0-9.]/g,"");
-  const display = !focused&&raw ? "$"+parseFloat(raw).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:2}) : raw;
-  return <input value={display} placeholder={placeholder||"$0"} onFocus={()=>setFocused(true)} onBlur={()=>setFocused(false)} onChange={e=>onChange(e.target.value.replace(/[^0-9.]/g,""))} style={style}/>;
-}
-
-// ── DateRangePicker ───────────────────────────────────
-function DateRangePicker({ startDate, endDate, onChange }) {
-  const [open,setOpen]=useState(false);
-  const [view,setView]=useState(()=>{
-    const d=startDate?new Date(startDate):new Date();
-    return {year:d.getFullYear(),month:d.getMonth()};
-  });
-  const ref=useRef();
-
-  useEffect(()=>{
-    const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
-    document.addEventListener("mousedown",h);
-    return()=>document.removeEventListener("mousedown",h);
-  },[]);
-
-  const fmtRange=()=>{
-    if(!startDate&&!endDate) return "Select dates";
-    const s=startDate?new Date(startDate+`T12:00:00`).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"";
-    const e=endDate?new Date(endDate+`T12:00:00`).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"";
-    if(s&&e) return `${s} – ${e}`;
-    return s||e;
-  };
-
-  const daysInMonth=(y,m)=>new Date(y,m+1,0).getDate();
-  const firstDay=(y,m)=>new Date(y,m,1).getDay();
-  const {year,month}=view;
-  const days=daysInMonth(year,month);
-  const offset=firstDay(year,month);
-  const cells=[...Array(offset).fill(null),...Array(days).fill(0).map((_,i)=>i+1)];
-
-  const isoDate=(y,m,d)=>`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
-
-  const handleDay=d=>{
-    if(!d) return;
-    const iso=isoDate(year,month,d);
-    if(!startDate||endDate) { onChange(iso,null); }
-    else if(iso<startDate) { onChange(iso,null); }
-    else { onChange(startDate,iso); setOpen(false); }
-  };
-
-  const inRange=d=>{
-    if(!d||!startDate||!endDate) return false;
-    const iso=isoDate(year,month,d);
-    return iso>startDate&&iso<endDate;
-  };
-  const isStart=d=>d&&isoDate(year,month,d)===startDate;
-  const isEnd=d=>d&&isoDate(year,month,d)===endDate;
-
-  return (
-    <div style={{position:"relative"}} ref={ref}>
-      <button onClick={()=>setOpen(!open)} style={{ background:B.white, border:`1px solid ${open?B.blue:B.border}`, borderRadius:8, padding:"8px 12px", cursor:"pointer", fontSize:12, color:startDate?B.black:B.grey3, display:"flex", alignItems:"center", gap:8, width:"100%", textAlign:"left" }}>
-        <span>📅</span><span>{fmtRange()}</span>
-      </button>
-      {open&&(
-        <div style={{ position:"absolute", top:"calc(100% + 6px)", left:0, background:B.white, border:`1px solid ${B.border}`, borderRadius:10, padding:16, zIndex:100, boxShadow:"0 8px 24px rgba(0,0,0,0.1)", minWidth:280 }}>
-          {/* Nav */}
-          <div style={{ display:"flex", alignItems:"center", marginBottom:12 }}>
-            <button onClick={()=>setView(v=>v.month===0?{year:v.year-1,month:11}:{year:v.year,month:v.month-1})} style={navBtn}>‹</button>
-            <div style={{ flex:1, textAlign:"center", fontWeight:600, fontSize:13 }}>{MONTHS[month]} {year}</div>
-            <button onClick={()=>setView(v=>v.month===11?{year:v.year+1,month:0}:{year:v.year,month:v.month+1})} style={navBtn}>›</button>
-          </div>
-          {/* Day headers */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:2, marginBottom:4 }}>
-            {["S","M","T","W","T","F","S"].map((d,i)=><div key={i} style={{ textAlign:"center", fontSize:10, fontWeight:600, color:B.grey3, padding:"2px 0" }}>{d}</div>)}
-          </div>
-          {/* Days */}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:2 }}>
-            {cells.map((d,i)=>(
-              <button key={i} onClick={()=>handleDay(d)} disabled={!d} style={{
-                background: isStart(d)||isEnd(d) ? B.blue : inRange(d) ? B.blueLo : "transparent",
-                border:"none", borderRadius:6, padding:"6px 0", cursor:d?"pointer":"default",
-                fontSize:12, color: isStart(d)||isEnd(d) ? B.white : d ? B.black : "transparent",
-                fontWeight: isStart(d)||isEnd(d) ? 700 : 400,
-              }}>{d||""}</button>
-            ))}
-          </div>
-          {(startDate&&!endDate)&&<div style={{ fontSize:11, color:B.blue, marginTop:8, textAlign:"center" }}>Now select end date</div>}
-          {(startDate&&endDate)&&<button onClick={()=>{onChange(null,null);}} style={{ width:"100%", marginTop:8, background:"transparent", border:`1px solid ${B.border}`, borderRadius:6, padding:"5px", fontSize:11, color:B.grey2, cursor:"pointer" }}>Clear</button>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const navBtn = { background:"transparent", border:`1px solid ${B.border}`, borderRadius:6, width:28, height:28, cursor:"pointer", fontSize:16, color:B.grey1, display:"flex", alignItems:"center", justifyContent:"center" };
-
-// ── UI Primitives ─────────────────────────────────────
-function KpiCard({ label, value, sub, color }) {
-  return (
-    <div style={{ background:B.card, border:`1px solid ${B.border}`, borderRadius:10, padding:"18px 20px", flex:1, minWidth:130 }}>
-      <div style={{ color:B.grey2, fontSize:11, fontWeight:600, letterSpacing:0.8, textTransform:"uppercase", marginBottom:8 }}>{label}</div>
-      <div style={{ color:color||B.black, fontSize:24, fontWeight:700, letterSpacing:-0.5, lineHeight:1 }}>{value}</div>
-      {sub&&<div style={{ color:B.grey3, fontSize:12, marginTop:5 }}>{sub}</div>}
-    </div>
-  );
-}
-
-function SmKpi({ label, value, color }) {
-  return (
-    <div style={{ background:B.bg, border:`1px solid ${B.border}`, borderRadius:8, padding:"10px 14px", flex:1, minWidth:80 }}>
-      <div style={{ color:B.grey3, fontSize:10, fontWeight:600, letterSpacing:0.8, textTransform:"uppercase", marginBottom:4 }}>{label}</div>
-      <div style={{ color:color||B.black, fontSize:16, fontWeight:700 }}>{value}</div>
-    </div>
-  );
-}
-
-function Bar({ label, value, max, color }) {
-  const w=max>0?Math.min((value/max)*100,100):0;
-  return (
-    <div style={{ marginBottom:11 }}>
-      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-        <span style={{ color:B.grey1, fontSize:12 }}>{label}</span>
-        <span style={{ color:B.black, fontSize:12, fontWeight:600 }}>{fmt(value)}</span>
-      </div>
-      <div style={{ height:5, background:B.grey4, borderRadius:99 }}>
-        <div style={{ height:"100%", width:`${w}%`, background:color, borderRadius:99, transition:"width 0.4s" }}/>
-      </div>
-    </div>
-  );
-}
-
-function Ring({ value, max, size=68 }) {
-  const r=(size-8)/2,circ=2*Math.PI*r,fill=max>0?Math.min(value/max,1):0;
-  return (
-    <svg width={size} height={size} style={{ transform:"rotate(-90deg)" }}>
-      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={B.grey4} strokeWidth={6}/>
-      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={B.blue} strokeWidth={6}
-        strokeDasharray={circ} strokeDashoffset={circ*(1-fill)} strokeLinecap="round" style={{ transition:"stroke-dashoffset 0.5s" }}/>
-    </svg>
-  );
-}
-
-function Tag({ children, color }) {
-  return <span style={{ background:`${color}12`, border:`1px solid ${color}28`, borderRadius:5, padding:"3px 9px", fontSize:11, color, fontWeight:500 }}>{children}</span>;
-}
-
-function Block({ title, accent=B.blue, children }) {
-  return (
-    <div style={{ background:B.card, border:`1px solid ${B.border}`, borderRadius:10, padding:"18px 20px", marginBottom:12 }}>
-      <div style={{ fontSize:11, fontWeight:700, color:B.grey2, textTransform:"uppercase", letterSpacing:1, marginBottom:14, display:"flex", alignItems:"center", gap:8 }}>
-        <div style={{ width:3, height:12, background:accent, borderRadius:2 }}/>
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function EmbedPanel({ url, label }) {
-  const [show,setShow]=useState(false),[rdy,setRdy]=useState(false);
-  if(!url) return null;
-  return (
-    <div style={{ marginBottom:8 }}>
-      <div style={{ display:"flex", alignItems:"center" }}>
-        <span style={{ fontSize:12, color:B.grey2 }}>{label}</span>
-        <div style={{ marginLeft:"auto", display:"flex", gap:6 }}>
-          <button onClick={()=>{setShow(!show);setRdy(false);}} style={{ background:show?B.blueLo:"transparent", border:`1px solid ${show?B.blue:B.border}`, borderRadius:6, padding:"4px 10px", color:show?B.blue:B.grey2, cursor:"pointer", fontSize:11 }}>{show?"Hide":"Embed"}</button>
-          <a href={url} target="_blank" rel="noreferrer" style={{ background:"transparent", border:`1px solid ${B.border}`, borderRadius:6, padding:"4px 10px", color:B.grey2, textDecoration:"none", fontSize:11 }}>↗ Open</a>
-        </div>
-      </div>
-      {show&&(
-        <div style={{ marginTop:8, borderRadius:8, overflow:"hidden", border:`1px solid ${B.border}`, position:"relative" }}>
-          {!rdy&&<div style={{ position:"absolute", inset:0, background:B.white, display:"flex", alignItems:"center", justifyContent:"center", zIndex:2 }}>
-            <div style={{ width:22,height:22,border:`2px solid ${B.blue}`,borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.7s linear infinite" }}/>
-          </div>}
-          <iframe src={url} width="100%" height="420" frameBorder="0" style={{ display:"block" }} onLoad={()=>setRdy(true)} title={label} sandbox="allow-scripts allow-same-origin allow-popups allow-forms"/>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function FileZone({ label, accept, onFile, info, color=B.blue, icon="📁" }) {
-  const ref=useRef();
-  return (
-    <div>
-      {label&&<label style={LS}>{label}</label>}
-      <div onClick={()=>ref.current.click()} style={{ border:`1px dashed ${info?color:B.border2}`, borderRadius:8, padding:"12px 8px", cursor:"pointer", textAlign:"center", background:info?`${color}0a`:B.bg }}>
-        {info
-          ?<><div style={{ fontSize:14 }}>✓</div><div style={{ fontSize:11,color,fontWeight:600,marginTop:2 }}>{info.name}</div>{info.rows&&<div style={{ fontSize:10,color:B.grey3 }}>{info.rows} rows</div>}</>
-          :<><div style={{ fontSize:16 }}>{icon}</div><div style={{ fontSize:11,color:B.grey3,marginTop:2 }}>Click to upload</div><div style={{ fontSize:10,color:B.grey3 }}>{accept}</div></>
-        }
-        <input ref={ref} type="file" accept={accept} style={{ display:"none" }} onChange={e=>e.target.files[0]&&onFile(e.target.files[0])}/>
-      </div>
-    </div>
-  );
-}
-
-// ── Period Editor ─────────────────────────────────────
-function PeriodEditor({ period, onChange, onDelete, canDelete }) {
-  const u=(f,v)=>onChange({...period,[f]:v});
-  const {rev,cr,sp,af,spend,profit,margin,activeCPM,goalViews}=periodCalc(period);
-  const affiliates=period.affiliates||[];
-
-  const addAffiliate=()=>onChange({...period,affiliates:[...affiliates,{id:Date.now()+Math.random(),name:"",amount:""}]});
-  const updateAff=(id,f,v)=>onChange({...period,affiliates:affiliates.map(a=>a.id===id?{...a,[f]:v}:a)});
-  const removeAff=id=>onChange({...period,affiliates:affiliates.filter(a=>a.id!==id)});
-
-  return (
-    <div style={{ background:B.bg, border:`1px solid ${B.border}`, borderRadius:10, padding:"16px", marginBottom:10 }}>
-      {/* Period header */}
-      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
-        <div style={{ flex:1 }}>
-          <label style={LS}>Date Range</label>
-          <DateRangePicker
-            startDate={period.startDate}
-            endDate={period.endDate}
-            onChange={(s,e)=>onChange({...period,startDate:s,endDate:e})}
-          />
-        </div>
-        {/* Status per period */}
-        <div style={{ flexShrink:0 }}>
-          <label style={LS}>Status</label>
-          <div style={{ display:"flex", gap:6 }}>
-            {STATUSES.map(s=>(
-              <button key={s} onClick={()=>u("status",s)} style={{ background:period.status===s?SB[s]:"transparent", border:`1px solid ${period.status===s?SC[s]:B.border}`, borderRadius:6, padding:"5px 10px", color:period.status===s?SC[s]:B.grey2, cursor:"pointer", fontSize:11, fontWeight:600 }}>{s}</button>
-            ))}
-          </div>
-        </div>
-        {canDelete&&<button onClick={onDelete} style={{ marginLeft:"auto", alignSelf:"flex-end", background:"transparent", border:`1px solid ${B.border}`, borderRadius:6, padding:"5px 10px", color:B.grey3, cursor:"pointer", fontSize:11 }}>Remove</button>}
-      </div>
-
-      {/* Live mini P&L */}
-      {(rev>0||spend>0)&&(
-        <div style={{ display:"flex", gap:14, background:B.white, border:`1px solid ${B.border}`, borderRadius:8, padding:"8px 14px", marginBottom:12, flexWrap:"wrap" }}>
-          {[{l:"Profit",v:fmt(profit),c:mc(margin)},{l:"Margin",v:pct(margin),c:mc(margin)},{l:"Active CPM",v:fmtD(activeCPM),c:B.blue},{l:"Goal Views",v:fmtN(goalViews),c:B.grey1}].map(({l,v,c})=>(
-            <div key={l}><div style={{ fontSize:9,color:B.grey3,textTransform:"uppercase",letterSpacing:0.8 }}>{l}</div><div style={{ fontSize:13,fontWeight:700,color:c }}>{v}</div></div>
-          ))}
-        </div>
-      )}
-
-      {/* Revenue + Spend */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:12 }}>
-        <div><label style={LS}>Revenue</label><CurrencyInput value={period.revenue} onChange={v=>u("revenue",v)} style={ISsm}/></div>
-        <div><label style={LS}>Creator Spend</label><CurrencyInput value={period.creatorSpend} onChange={v=>u("creatorSpend",v)} style={ISsm}/></div>
-        <div><label style={LS}>Spark Spend</label><CurrencyInput value={period.sparkSpend} onChange={v=>u("sparkSpend",v)} style={ISsm}/></div>
-      </div>
-
-      {/* CPM & Views */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:12 }}>
-        <div>
-          <label style={LS}>Target CPM</label>
-          <CurrencyInput value={period.targetCPM} onChange={v=>u("targetCPM",v)} placeholder="$0.00" style={ISsm}/>
-          {goalViews>0&&<div style={{ fontSize:10,color:B.blue,marginTop:3 }}>Goal: {fmtN(goalViews)} views</div>}
-        </div>
-        <div>
-          <label style={LS}>Total Views</label>
-          <input value={period.totalViews||""} onChange={e=>u("totalViews",e.target.value.replace(/[^0-9]/g,""))}
-            placeholder="0" style={ISsm}/>
-          {activeCPM>0&&<div style={{ fontSize:10,color:B.blue,marginTop:3 }}>Active CPM: {fmtD(activeCPM)}</div>}
-        </div>
-        <div style={{ display:"flex", flexDirection:"column", justifyContent:"center", background:B.white, border:`1px solid ${B.border}`, borderRadius:8, padding:"8px 12px", marginTop:18 }}>
-          <div style={{ fontSize:10,color:B.grey3,textTransform:"uppercase",letterSpacing:0.8,marginBottom:2 }}>Goal Views (auto)</div>
-          <div style={{ fontSize:14,fontWeight:700,color:B.black }}>{goalViews>0?fmtN(goalViews):"—"}</div>
-        </div>
-      </div>
-
-      {/* Affiliate Partners */}
-      <div style={{ background:B.white, border:`1px solid ${B.border}`, borderRadius:8, padding:"12px 14px", marginBottom:12 }}>
-        <div style={{ display:"flex", alignItems:"center", marginBottom:8 }}>
-          <div style={{ fontSize:11,fontWeight:700,color:B.grey2,textTransform:"uppercase",letterSpacing:0.8 }}>🤝 Affiliate Partners</div>
-          {af>0&&<div style={{ marginLeft:"auto",fontSize:12,fontWeight:700,color:B.yellow }}>Total: {fmt(af)}</div>}
-        </div>
-        {affiliates.length===0&&<div style={{ fontSize:12,color:B.grey3,marginBottom:8 }}>No affiliate partners added yet.</div>}
-        {affiliates.map(a=>(
-          <div key={a.id} style={{ display:"flex",gap:8,alignItems:"center",marginBottom:8 }}>
-            <input value={a.name} onChange={e=>updateAff(a.id,"name",e.target.value)} placeholder="Partner name" style={{ ...ISsm,flex:2 }}/>
-            <CurrencyInput value={a.amount} onChange={v=>updateAff(a.id,"amount",v)} style={{ ...ISsm,flex:1 }}/>
-            <button onClick={()=>removeAff(a.id)} style={{ background:"transparent",border:`1px solid ${B.border}`,borderRadius:6,padding:"5px 9px",color:B.grey3,cursor:"pointer",fontSize:12,flexShrink:0 }}>✕</button>
-          </div>
-        ))}
-        <button onClick={addAffiliate} style={{ background:"transparent",border:`1px dashed ${B.blue}`,borderRadius:6,padding:"6px 14px",color:B.blue,cursor:"pointer",fontSize:12,fontWeight:600,width:"100%" }}>+ Add Partner</button>
-      </div>
-
-      <div><label style={LS}>Period Notes</label><textarea value={period.notes||""} onChange={e=>u("notes",e.target.value)} rows={2} placeholder="Notes specific to this period..." style={{ ...ISsm,resize:"vertical",lineHeight:1.5,width:"100%" }}/></div>
-    </div>
-  );
-}
-
-const LS  = { fontSize:11,color:B.grey2,fontWeight:600,letterSpacing:0.5,display:"block",marginBottom:6,textTransform:"uppercase" };
-const IS  = { width:"100%",background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"9px 12px",color:B.black,fontSize:13,outline:"none",fontFamily:"inherit",boxSizing:"border-box" };
-const ISsm= { ...IS,padding:"7px 10px",fontSize:12 };
-
-// ── Main App ──────────────────────────────────────────
-export default function App() {
-  const [tab,setTab]=useState("Overview");
-  const [campaigns,setCampaigns]=useState([]);
-  const [editing,setEditing]=useState(null);
-  const [form,setForm]=useState(defaultCampaign());
-  const [expanded,setExpanded]=useState(null);
-  const [expandedPeriod,setExpandedPeriod]=useState({});
-  const [csv,setCsv]=useState({});
-  const [ready,setReady]=useState(false);
-  const [showExport,setShowExport]=useState(false);
-  const [workerUrl,setWorkerUrl]=useState(()=>localStorage.getItem("ss_worker_url")||"https://sideshift-proxy.djohnson-191.workers.dev");
-  const [showSettings,setShowSettings]=useState(false);
-  const [liveData,setLiveData]=useState(null);
-  const [liveLoading,setLiveLoading]=useState(false);
-  const [liveError,setLiveError]=useState(null);
-  const [programs,setPrograms]=useState([]);
-  const [lastRefresh,setLastRefresh]=useState(null);
-
-  useEffect(()=>{const s=localStorage.getItem("ss_mp_v1");if(s)try{setCampaigns(JSON.parse(s))}catch{};setReady(true);},[]);
-  useEffect(()=>{if(ready)localStorage.setItem("ss_mp_v1",JSON.stringify(campaigns));},[campaigns,ready]);
-
-  const book=campaigns.reduce((a,c)=>{
-    const t=campaignTotals(c);
-    a.rev+=t.rev;a.spend+=t.spend;a.profit+=t.profit;a.views+=t.views;
-    return a;
-  },{rev:0,spend:0,profit:0,views:0});
-  book.margin=book.rev>0?(book.profit/book.rev)*100:0;
-  book.activeCPM=book.views>0?(book.rev/(book.views/1000)):0;
-
-  const inp=f=>({value:form[f]||"",onChange:e=>setForm(p=>({...p,[f]:e.target.value}))});
-
-  const updatePeriod=(id,updated)=>setForm(p=>({...p,periods:p.periods.map(pr=>pr.id===id?updated:pr)}));
-  const addPeriod=()=>{
-    const last=form.periods[form.periods.length-1];
-    setForm(p=>({...p,periods:[...p.periods,defaultPeriod(p.periods.length,last)]}));
-  };
-  const removePeriod=id=>setForm(p=>({...p,periods:p.periods.filter(pr=>pr.id!==id)}));
-
-  const parseCSV=(file,key)=>{
-    Papa.parse(file,{header:true,skipEmptyLines:true,dynamicTyping:true,complete:(r)=>{
-      const info={name:file.name,rows:r.data.length,data:r.data,fields:r.meta.fields};
-      setCsv(p=>({...p,[key]:info}));
-      setForm(p=>({...p,[`${key}CSV`]:{name:file.name,rows:r.data.length}}));
-    }});
-  };
-
-  const addDoc=(file,type)=>setForm(p=>({...p,[type]:[...(p[type]||[]),{name:file.name,size:(file.size/1024).toFixed(0)+"KB"}]}));
-
-  const save=()=>{
-    if(!form.name.trim())return;
-    if(editing!==null)setCampaigns(p=>p.map(c=>c.id===editing?{...form,id:editing}:c));
-    else setCampaigns(p=>[...p,{...form,id:Date.now()}]);
-    setForm(defaultCampaign());setEditing(null);setCsv({});setTab("Campaigns");
-  };
-
-  const editCampaign=c=>{setForm({...c});setEditing(c.id);setCsv({});setTab("Add / Edit");};
-  const delCampaign=id=>setCampaigns(p=>p.filter(c=>c.id!==id));
-  const newCamp=()=>{setForm(defaultCampaign());setEditing(null);setCsv({});setTab("Add / Edit");};
-
-  // ── Live API fetch ────────────────────────────────
-  const fetchLive = async () => {
-    if(!workerUrl) return;
-    setLiveLoading(true); setLiveError(null);
-    try {
-      const url = workerUrl.replace(/\/$/, "");
-      // Try direct fetch first
-      const overviewRes = await fetch(`${url}?path=/analytics/overview`, {
-        method: "GET",
-        mode: "cors",
-        headers: { "Accept": "application/json" },
-      });
-      if(!overviewRes.ok) throw new Error(`HTTP ${overviewRes.status}`);
-      const overviewData = await overviewRes.json();
-
-      let progsData = [];
-      try {
-        const progsRes = await fetch(`${url}?path=/programs`, { mode:"cors" });
-        const progs = await progsRes.json();
-        progsData = progs?.data || [];
-      } catch(e) {}
-
-      setLiveData({
-        overview: overviewData?.data?.summary || {},
-        topPosts: overviewData?.data?.topPosts || [],
-        topCreators: overviewData?.data?.topCreators || [],
-        platformBreakdown: overviewData?.data?.platformBreakdown || {}
-      });
-      setPrograms(progsData);
-      setLastRefresh(new Date());
-    } catch(e) {
-      // If CORS blocked (running inside Claude sandbox), show helpful message
-      if(e.message.includes("Failed to fetch") || e.message.includes("NetworkError") || e.message.includes("CORS")) {
-        setLiveError("SANDBOX_BLOCKED");
-      } else {
-        setLiveError(e.message);
-      }
-    } finally {
-      setLiveLoading(false);
-    }
-  };
-
-  useEffect(()=>{ fetchLive(); },[workerUrl]);
-  useEffect(()=>{
-    const interval = setInterval(fetchLive, 60000);
-    return ()=>clearInterval(interval);
-  },[workerUrl]);
-
-  const exportData=()=>setShowExport(true);
-  const importData=e=>{
-    const file=e.target.files[0];if(!file)return;
-    const reader=new FileReader();
-    reader.onload=ev=>{
-      try{const data=JSON.parse(ev.target.result);if(Array.isArray(data)){setCampaigns(data);alert(`✅ Imported ${data.length} campaign(s).`);}}
-      catch{alert("Invalid file.");}
+    const B = {
+      bg:"#F4F6F8", white:"#FFFFFF", card:"#FFFFFF", border:"#E5E7EB", border2:"#D1D5DB",
+      blue:"#218AC3", blueLo:"#EFF6FB", blueMid:"#D3E7EE",
+      black:"#111111", grey1:"#374151", grey2:"#6B7280", grey3:"#9CA3AF", grey4:"#E5E7EB",
+      green:"#16a34a", greenLo:"#F0FDF4", yellow:"#d97706", yellowLo:"#FFFBEB",
+      red:"#dc2626", redLo:"#FEF2F2",
     };
-    reader.readAsText(file);e.target.value="";
-  };
+    const SC = { Active:B.green, Completed:B.blue, Paused:B.yellow };
+    const SB = { Active:B.greenLo, Completed:B.blueLo, Paused:B.yellowLo };
+    const TABS = ["Overview","Campaigns","Add / Edit"];
+    const STATUSES = ["Active","Completed","Paused"];
+    const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-  const fmtDateRange=(p)=>{
-    if(!p.startDate) return "";
-    const s=new Date(p.startDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"});
-    const e=p.endDate?new Date(p.endDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"";
-    return e?`${s} – ${e}`:s;
-  };
+    const fmt  = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(n||0);
+    const fmtD = n => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2,maximumFractionDigits:2}).format(n||0);
+    const fmtN = n => new Intl.NumberFormat("en-US",{maximumFractionDigits:0}).format(n||0);
+    const pct  = n => (isNaN(n)||!isFinite(n))?"0%":`${n.toFixed(1)}%`;
+    const num  = v => parseFloat(String(v).replace(/[^0-9.]/g,""))||0;
+    const mc   = m => m>=50?B.green:m>=25?B.yellow:m===0?B.grey3:B.red;
+    const mcBg = m => m>=50?B.greenLo:m>=25?B.yellowLo:m===0?"transparent":B.redLo;
 
-  return (
-    <div style={{ minHeight:"100vh",background:B.bg,fontFamily:"'Inter',-apple-system,sans-serif",color:B.black,paddingBottom:80 }}>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}} *{box-sizing:border-box} input::placeholder,textarea::placeholder{color:${B.grey3}} input:focus,textarea:focus{border-color:${B.blue}!important;outline:none}`}</style>
+    const derivedStatus = periods => {
+      if(!periods||periods.length===0) return "Active";
+      const statuses = periods.map(p=>p.status||"Active");
+      if(statuses.some(s=>s==="Active")) return "Active";
+      if(statuses.every(s=>s==="Completed")) return "Completed";
+      return "Paused";
+    };
 
-      {/* Settings Modal */}
-      {showSettings&&(
-        <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center" }}>
-          <div style={{ background:B.white,borderRadius:12,padding:24,width:480,boxShadow:"0 20px 60px rgba(0,0,0,0.15)" }}>
-            <div style={{ display:"flex",alignItems:"center",marginBottom:16 }}>
-              <div style={{ fontWeight:700,fontSize:15 }}>⚙️ API Settings</div>
-              <button onClick={()=>setShowSettings(false)} style={{ marginLeft:"auto",background:"transparent",border:"none",fontSize:18,color:B.grey2,cursor:"pointer" }}>✕</button>
-            </div>
-            <label style={LS}>Cloudflare Worker URL</label>
-            <input value={workerUrl} onChange={e=>{setWorkerUrl(e.target.value);localStorage.setItem("ss_worker_url",e.target.value);}}
-              placeholder="https://sideshift-proxy.yourname.workers.dev"
-              style={{ ...IS, marginBottom:8 }}/>
-            <div style={{ fontSize:11,color:B.grey3,marginBottom:16 }}>Your worker securely proxies requests to SideShift using your API key. Never paste your API key here.</div>
-            <button onClick={()=>{fetchLive();setShowSettings(false);}} style={{ background:B.black,border:"none",borderRadius:8,padding:"9px 20px",color:B.white,cursor:"pointer",fontSize:13,fontWeight:600 }}>Save & Reconnect</button>
-          </div>
-        </div>
-      )}
-      {showExport&&(
-        <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center" }}>
-          <div style={{ background:B.white,borderRadius:12,padding:24,width:560,maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 20px 60px rgba(0,0,0,0.15)" }}>
-            <div style={{ display:"flex",alignItems:"center",marginBottom:6 }}>
-              <div style={{ fontWeight:700,fontSize:15 }}>Export Data</div>
-              <button onClick={()=>setShowExport(false)} style={{ marginLeft:"auto",background:"transparent",border:"none",fontSize:18,color:B.grey2,cursor:"pointer" }}>✕</button>
-            </div>
-            <div style={{ fontSize:13,color:B.grey2,marginBottom:12 }}>Copy the text below → paste into a new file → save as <strong>backup.json</strong></div>
-            <textarea readOnly value={JSON.stringify(campaigns,null,2)} style={{ flex:1,minHeight:300,background:B.bg,border:`1px solid ${B.border}`,borderRadius:8,padding:12,fontSize:11,fontFamily:"monospace",color:B.grey1,resize:"none",outline:"none" }} onClick={e=>e.target.select()}/>
-            <button onClick={()=>{const el=document.querySelector("textarea[readonly]");el.select();document.execCommand("copy");alert("✅ Copied!");}} style={{ marginTop:12,background:B.black,border:"none",borderRadius:8,padding:"10px",color:B.white,cursor:"pointer",fontSize:13,fontWeight:600 }}>Copy to Clipboard</button>
-          </div>
-        </div>
-      )}
+    const defaultPeriod = (index=0, prev=null) => {
+      const now = new Date();
+      const d = new Date(now.getFullYear(), now.getMonth() + index, 1);
+      return {
+        id: Date.now() + index + Math.random(),
+        startDate: d.toISOString().slice(0,10),
+        endDate: new Date(d.getFullYear(), d.getMonth()+1, 0).toISOString().slice(0,10),
+        revenue: prev?.revenue || "",
+        creatorSpend:"", sparkSpend:"",
+        affiliates:[],
+        targetCPM: prev?.targetCPM || "",
+        totalViews:"",
+        notes:"",
+        status:"Active",
+      };
+    };
 
-      {/* NAV */}
-      <div style={{ background:B.white,borderBottom:`1px solid ${B.border}` }}>
-        <div style={{ maxWidth:1200,margin:"0 auto",padding:"0 28px",display:"flex",alignItems:"center",height:56,gap:32 }}>
-          <div style={{ display:"flex",alignItems:"center",flexShrink:0 }}>
-            <span style={{ fontWeight:700,fontSize:16,letterSpacing:-0.4,color:B.black }}>SideShift</span>
-            <span style={{ color:B.border2,fontSize:16,fontWeight:300,margin:"0 14px" }}>|</span>
-            <span style={{ color:B.grey2,fontSize:13,fontWeight:500 }}>P&L Tracker</span>
-          </div>
-          <div style={{ display:"flex",alignItems:"stretch",height:"100%",gap:2 }}>
-            {TABS.map(t=>{const active=tab===t;return(
-              <button key={t} onClick={()=>{setTab(t);if(t==="Add / Edit"&&!editing)newCamp();}} style={{ background:"transparent",border:"none",borderBottom:`2px solid ${active?B.blue:"transparent"}`,borderTop:"2px solid transparent",color:active?B.blue:B.grey2,padding:"0 14px",cursor:"pointer",fontSize:13,fontWeight:active?600:400,transition:"all 0.15s",whiteSpace:"nowrap" }}>
-                {t==="Add / Edit"&&editing?"✏️ Editing":t}
-              </button>);
-            })}
-          </div>
-          <div style={{ marginLeft:"auto",display:"flex",gap:8,alignItems:"center",flexShrink:0 }}>
-            <span style={{ fontSize:12,color:B.green,background:B.greenLo,border:`1px solid ${B.green}25`,borderRadius:20,padding:"3px 10px",fontWeight:500 }}>{campaigns.filter(c=>derivedStatus(c.periods)==="Active").length} Active</span>
-            <span style={{ fontSize:12,color:B.grey2,background:B.bg,border:`1px solid ${B.border}`,borderRadius:20,padding:"3px 10px",fontWeight:500 }}>{campaigns.length} Total</span>
-            <button onClick={exportData} style={{ background:"transparent",border:`1px solid ${B.border}`,borderRadius:7,padding:"7px 14px",color:B.grey1,cursor:"pointer",fontSize:12,fontWeight:500 }}>⬇ Export</button>
-            <label style={{ background:"transparent",border:`1px solid ${B.border}`,borderRadius:7,padding:"7px 14px",color:B.grey1,cursor:"pointer",fontSize:12,fontWeight:500 }}>⬆ Import<input type="file" accept=".json" style={{ display:"none" }} onChange={importData}/></label>
-            <button onClick={()=>setShowSettings(true)} style={{ background:"transparent",border:`1px solid ${B.border}`,borderRadius:7,padding:"7px 14px",color:liveData?B.green:liveError?B.red:B.grey1,cursor:"pointer",fontSize:12,fontWeight:500 }} title="API Settings">
-              {liveLoading?"⟳ Syncing…":liveData?"● Live":"○ Connect API"}
-            </button>
-            <button onClick={newCamp} style={{ background:B.black,border:"none",borderRadius:7,padding:"7px 16px",color:B.white,cursor:"pointer",fontSize:13,fontWeight:600 }}>+ New Campaign</button>
-          </div>
-        </div>
-      </div>
+    const defaultCampaign = () => ({
+      id:Date.now(), name:"", client:"",
+      analyticsUrl:"", affiliateAnalyticsUrl:"",
+      findings:"", future:"", improvements:"",
+      creatorCSV:null, sparkCSV:null, sparkAdsCSV:null, invoices:[], otherFiles:[],
+      periods:[defaultPeriod(0)],
+    });
 
-      <div style={{ maxWidth:1200,margin:"0 auto",padding:"24px 28px" }}>
+    const periodCalc = p => {
+      const rev = num(p.revenue);
+      const cr  = num(p.creatorSpend);
+      const sp  = num(p.sparkSpend);
+      const af  = (p.affiliates||[]).reduce((s,a)=>s+num(a.amount),0);
+      const spend  = cr+sp+af;
+      const profit = rev-spend;
+      const margin = rev>0?(profit/rev)*100:0;
+      const views  = num(p.totalViews);
+      const activeCPM = views>0 ? (rev/(views/1000)) : 0;
+      const goalViews = num(p.targetCPM)>0 ? Math.round(rev/num(p.targetCPM)*1000) : 0;
+      return { rev, cr, sp, af, spend, profit, margin, views, activeCPM, goalViews };
+    };
 
-        {/* ── OVERVIEW ── */}
-        {tab==="Overview"&&<>
-          {/* ── Live SideShift Analytics ── */}
-          {liveError&&(
-            <div style={{ background:liveError==="SANDBOX_BLOCKED"?B.yellowLo:B.redLo, border:`1px solid ${liveError==="SANDBOX_BLOCKED"?B.yellow:B.red}25`, borderRadius:10, padding:"14px 18px", marginBottom:14 }}>
-              {liveError==="SANDBOX_BLOCKED" ? (
-                <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                  <div>
-                    <div style={{ fontSize:13, fontWeight:600, color:B.yellow, marginBottom:3 }}>⚠️ Live data blocked inside Claude sandbox</div>
-                    <div style={{ fontSize:12, color:B.grey1 }}>Your worker is working perfectly. To see live analytics, open the tracker in a real browser tab:</div>
-                  </div>
-                  <a href="https://claude.ai/artifacts/64696269-b5f6-4a33-ae65-04aa97b0eee0" target="_blank" rel="noreferrer"
-                    style={{ marginLeft:"auto", background:B.black, border:"none", borderRadius:7, padding:"8px 16px", color:B.white, textDecoration:"none", fontSize:12, fontWeight:600, whiteSpace:"nowrap", flexShrink:0 }}>
-                    Open Live Dashboard ↗
-                  </a>
-                </div>
-              ) : (
-                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                  <span style={{ fontSize:13, color:B.red }}>⚠️ {liveError}</span>
-                  <button onClick={()=>setShowSettings(true)} style={{ marginLeft:"auto", background:"transparent", border:`1px solid ${B.red}30`, borderRadius:6, padding:"4px 10px", color:B.red, cursor:"pointer", fontSize:11 }}>Check Settings</button>
-                </div>
-              )}
+    const campaignTotals = c => {
+      const periods = c.periods||[];
+      const agg = periods.reduce((a,p)=>{
+        const t=periodCalc(p);
+        a.rev+=t.rev; a.cr+=t.cr; a.sp+=t.sp; a.af+=t.af;
+        a.spend+=t.spend; a.profit+=t.profit; a.views+=t.views;
+        return a;
+      },{rev:0,cr:0,sp:0,af:0,spend:0,profit:0,views:0});
+      agg.margin  = agg.rev>0?(agg.profit/agg.rev)*100:0;
+      agg.activeCPM = agg.views>0?(agg.rev/(agg.views/1000)):0;
+      return agg;
+    };
+
+    function CurrencyInput({ value, onChange, placeholder, style }) {
+      const [focused,setFocused]=useState(false);
+      const raw = String(value||"").replace(/[^0-9.]/g,"");
+      const display = !focused&&raw ? "$"+parseFloat(raw).toLocaleString("en-US",{minimumFractionDigits:0,maximumFractionDigits:2}) : raw;
+      return <input value={display} placeholder={placeholder||"$0"} onFocus={()=>setFocused(true)} onBlur={()=>setFocused(false)} onChange={e=>onChange(e.target.value.replace(/[^0-9.]/g,""))} style={style}/>;
+    }
+
+    function DateRangePicker({ startDate, endDate, onChange }) {
+      const [open,setOpen]=useState(false);
+      const [view,setView]=useState(()=>{
+        const d=startDate?new Date(startDate):new Date();
+        return {year:d.getFullYear(),month:d.getMonth()};
+      });
+      const ref=useRef();
+      useEffect(()=>{
+        const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
+        document.addEventListener("mousedown",h);
+        return()=>document.removeEventListener("mousedown",h);
+      },[]);
+      const fmtRange=()=>{
+        if(!startDate&&!endDate) return "Select dates";
+        const s=startDate?new Date(startDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"";
+        const e=endDate?new Date(endDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"";
+        if(s&&e) return `${s} – ${e}`;
+        return s||e;
+      };
+      const daysInMonth=(y,m)=>new Date(y,m+1,0).getDate();
+      const firstDay=(y,m)=>new Date(y,m,1).getDay();
+      const {year,month}=view;
+      const days=daysInMonth(year,month);
+      const offset=firstDay(year,month);
+      const cells=[...Array(offset).fill(null),...Array(days).fill(0).map((_,i)=>i+1)];
+      const isoDate=(y,m,d)=>`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+      const handleDay=d=>{
+        if(!d) return;
+        const iso=isoDate(year,month,d);
+        if(!startDate||endDate){onChange(iso,null);}
+        else if(iso<startDate){onChange(iso,null);}
+        else{onChange(startDate,iso);setOpen(false);}
+      };
+      const inRange=d=>{if(!d||!startDate||!endDate)return false;const iso=isoDate(year,month,d);return iso>startDate&&iso<endDate;};
+      const isStart=d=>d&&isoDate(year,month,d)===startDate;
+      const isEnd=d=>d&&isoDate(year,month,d)===endDate;
+      const navBtn={background:"transparent",border:`1px solid ${B.border}`,borderRadius:6,width:28,height:28,cursor:"pointer",fontSize:16,color:B.grey1,display:"flex",alignItems:"center",justifyContent:"center"};
+      return (
+        <div style={{position:"relative"}} ref={ref}>
+          <button onClick={()=>setOpen(!open)} style={{background:B.white,border:`1px solid ${open?B.blue:B.border}`,borderRadius:8,padding:"8px 12px",cursor:"pointer",fontSize:12,color:startDate?B.black:B.grey3,display:"flex",alignItems:"center",gap:8,width:"100%",textAlign:"left"}}>
+            <span>📅</span><span>{fmtRange()}</span>
+          </button>
+          {open&&(
+            <div style={{position:"absolute",top:"calc(100% + 6px)",left:0,background:B.white,border:`1px solid ${B.border}`,borderRadius:10,padding:16,zIndex:100,boxShadow:"0 8px 24px rgba(0,0,0,0.1)",minWidth:280}}>
+              <div style={{display:"flex",alignItems:"center",marginBottom:12}}>
+                <button onClick={()=>setView(v=>v.month===0?{year:v.year-1,month:11}:{year:v.year,month:v.month-1})} style={navBtn}>‹</button>
+                <div style={{flex:1,textAlign:"center",fontWeight:600,fontSize:13}}>{MONTHS[month]} {year}</div>
+                <button onClick={()=>setView(v=>v.month===11?{year:v.year+1,month:0}:{year:v.year,month:v.month+1})} style={navBtn}>›</button>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:4}}>
+                {["S","M","T","W","T","F","S"].map((d,i)=><div key={i} style={{textAlign:"center",fontSize:10,fontWeight:600,color:B.grey3,padding:"2px 0"}}>{d}</div>)}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+                {cells.map((d,i)=>(
+                  <button key={i} onClick={()=>handleDay(d)} disabled={!d} style={{background:isStart(d)||isEnd(d)?B.blue:inRange(d)?B.blueLo:"transparent",border:"none",borderRadius:6,padding:"6px 0",cursor:d?"pointer":"default",fontSize:12,color:isStart(d)||isEnd(d)?B.white:d?B.black:"transparent",fontWeight:isStart(d)||isEnd(d)?700:400}}>{d||""}</button>
+                ))}
+              </div>
+              {(startDate&&!endDate)&&<div style={{fontSize:11,color:B.blue,marginTop:8,textAlign:"center"}}>Now select end date</div>}
+              {(startDate&&endDate)&&<button onClick={()=>onChange(null,null)} style={{width:"100%",marginTop:8,background:"transparent",border:`1px solid ${B.border}`,borderRadius:6,padding:"5px",fontSize:11,color:B.grey2,cursor:"pointer"}}>Clear</button>}
             </div>
           )}
-          {liveData&&(()=>{
-            const s = liveData.overview;
-            const pb = liveData.platformBreakdown;
-            return (
-              <div style={{ background:B.blueLo, border:`1px solid ${B.blueMid}`, borderRadius:10, padding:"16px 20px", marginBottom:14 }}>
-                <div style={{ display:"flex", alignItems:"center", marginBottom:12 }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:B.blue, textTransform:"uppercase", letterSpacing:0.8 }}>📡 Live — SideShift Analytics</div>
-                  <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:10 }}>
-                    {lastRefresh&&<span style={{ fontSize:11, color:B.grey2 }}>Updated {lastRefresh.toLocaleTimeString()}</span>}
-                    <button onClick={fetchLive} disabled={liveLoading} style={{ background:"transparent", border:`1px solid ${B.blue}30`, borderRadius:6, padding:"4px 10px", color:B.blue, cursor:"pointer", fontSize:11 }}>
-                      {liveLoading?"Syncing…":"↻ Refresh"}
-                    </button>
-                  </div>
-                </div>
-                <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:12 }}>
-                  {[
-                    {l:"Total Views",      v: fmtN(s.totalViews||0),       c: B.black},
-                    {l:"Total Posts",      v: fmtN(s.totalPosts||0),        c: B.black},
-                    {l:"Engagement Rate",  v: `${(s.engagementRate||0).toFixed(2)}%`, c: B.blue},
-                    {l:"Total Likes",      v: fmtN(s.totalLikes||0),        c: B.black},
-                    {l:"Total Comments",   v: fmtN(s.totalComments||0),     c: B.black},
-                    {l:"Active Contracts", v: String(s.activeContracts||0), c: B.green},
-                    {l:"Unique Creators",  v: String(s.uniqueCreators||0),  c: B.black},
-                    {l:"Total Shares",     v: fmtN(s.totalShares||0),       c: B.black},
-                  ].map(({l,v,c})=>(
-                    <div key={l} style={{ background:B.white, border:`1px solid ${B.border}`, borderRadius:8, padding:"10px 16px", flex:1, minWidth:100 }}>
-                      <div style={{ fontSize:10, color:B.grey2, fontWeight:600, textTransform:"uppercase", letterSpacing:0.8, marginBottom:4 }}>{l}</div>
-                      <div style={{ fontSize:18, fontWeight:700, color:c }}>{v}</div>
-                    </div>
-                  ))}
-                </div>
+        </div>
+      );
+    }
 
-                {/* Platform Breakdown */}
-                {pb && Object.keys(pb).length > 0 && (
-                  <div style={{ display:"flex", gap:10, marginBottom:12 }}>
-                    {Object.entries(pb).map(([platform, data])=>(
-                      <div key={platform} style={{ background:B.white, border:`1px solid ${B.border}`, borderRadius:8, padding:"10px 16px", flex:1 }}>
-                        <div style={{ fontSize:11, fontWeight:700, color:B.grey1, textTransform:"capitalize", marginBottom:6 }}>
-                          {platform==="tiktok"?"🎵":"📷"} {platform}
-                        </div>
-                        <div style={{ display:"flex", gap:16 }}>
-                          <div><div style={{ fontSize:9, color:B.grey3, textTransform:"uppercase", letterSpacing:0.8 }}>Views</div><div style={{ fontSize:14, fontWeight:700 }}>{fmtN(data.views||0)}</div></div>
-                          <div><div style={{ fontSize:9, color:B.grey3, textTransform:"uppercase", letterSpacing:0.8 }}>Posts</div><div style={{ fontSize:14, fontWeight:700 }}>{fmtN(data.posts||0)}</div></div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+    function KpiCard({ label, value, sub, color }) {
+      return (
+        <div style={{background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:"18px 20px",flex:1,minWidth:130}}>
+          <div style={{color:B.grey2,fontSize:11,fontWeight:600,letterSpacing:0.8,textTransform:"uppercase",marginBottom:8}}>{label}</div>
+          <div style={{color:color||B.black,fontSize:24,fontWeight:700,letterSpacing:-0.5,lineHeight:1}}>{value}</div>
+          {sub&&<div style={{color:B.grey3,fontSize:12,marginTop:5}}>{sub}</div>}
+        </div>
+      );
+    }
 
-                {/* Top Posts */}
-                {liveData.topPosts?.length > 0 && (
-                  <div style={{ background:B.white, border:`1px solid ${B.border}`, borderRadius:8, padding:"12px 14px" }}>
-                    <div style={{ fontSize:11, fontWeight:700, color:B.grey2, textTransform:"uppercase", letterSpacing:0.8, marginBottom:10 }}>🔥 Top Posts</div>
-                    {liveData.topPosts.slice(0,5).map((p,i)=>(
-                      <div key={p.id} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
-                        <div style={{ width:20, height:20, borderRadius:5, background:i===0?B.yellowLo:B.bg, display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, color:i===0?B.yellow:B.grey3, fontWeight:700, border:`1px solid ${B.border}`, flexShrink:0 }}>#{i+1}</div>
-                        <div style={{ flex:1, minWidth:0 }}>
-                          <div style={{ fontSize:12, fontWeight:500, color:B.black, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{p.title}</div>
-                          <div style={{ fontSize:10, color:B.grey2 }}>{p.creator} · {p.platform==="tiktok"?"🎵":"📷"}</div>
-                        </div>
-                        <div style={{ textAlign:"right", flexShrink:0 }}>
-                          <div style={{ fontSize:12, fontWeight:700, color:B.black }}>{fmtN(p.views)}</div>
-                          <div style={{ fontSize:10, color:B.grey2 }}>{fmtN(p.likes)} likes</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
+    function SmKpi({ label, value, color }) {
+      return (
+        <div style={{background:B.bg,border:`1px solid ${B.border}`,borderRadius:8,padding:"10px 14px",flex:1,minWidth:80}}>
+          <div style={{color:B.grey3,fontSize:10,fontWeight:600,letterSpacing:0.8,textTransform:"uppercase",marginBottom:4}}>{label}</div>
+          <div style={{color:color||B.black,fontSize:16,fontWeight:700}}>{value}</div>
+        </div>
+      );
+    }
 
-          <div style={{ marginBottom:20 }}>
-            <div style={{ fontSize:20,fontWeight:700,marginBottom:3 }}>Overview</div>
-            <div style={{ fontSize:13,color:B.grey2 }}>Your full book of business across all campaigns and periods.</div>
+    function Bar({ label, value, max, color }) {
+      const w=max>0?Math.min((value/max)*100,100):0;
+      return (
+        <div style={{marginBottom:11}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+            <span style={{color:B.grey1,fontSize:12}}>{label}</span>
+            <span style={{color:B.black,fontSize:12,fontWeight:600}}>{fmt(value)}</span>
           </div>
-
-          <div style={{ display:"flex",gap:10,flexWrap:"wrap",marginBottom:14 }}>
-            <KpiCard label="Total Revenue" value={fmt(book.rev)} sub={`${campaigns.length} campaigns`} color={B.blue}/>
-            <KpiCard label="Total Profit"  value={fmt(book.profit)} sub={pct(book.margin)+" margin"} color={mc(book.margin)}/>
-            <KpiCard label="Total Spend"   value={fmt(book.spend)} sub="All cost lines"/>
-            <KpiCard label="Profit Margin" value={pct(book.margin)} sub="Book of business" color={mc(book.margin)}/>
-            <KpiCard label="Total Views"   value={fmtN(book.views)} sub={`Active CPM: ${fmtD(book.activeCPM)}`} color={B.black}/>
+          <div style={{height:5,background:B.grey4,borderRadius:99}}>
+            <div style={{height:"100%",width:`${w}%`,background:color,borderRadius:99,transition:"width 0.4s"}}/>
           </div>
+        </div>
+      );
+    }
 
-          <div style={{ display:"flex",gap:12,flexWrap:"wrap",marginBottom:14 }}>
-            <div style={{ flex:1.2,minWidth:260,background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:"20px 22px" }}>
-              <div style={{ fontWeight:600,fontSize:14,marginBottom:14 }}>Spend Breakdown</div>
-              {(()=>{
-                const cr=campaigns.reduce((a,c)=>a+(c.periods||[]).reduce((b,p)=>b+num(p.creatorSpend),0),0);
-                const sp=campaigns.reduce((a,c)=>a+(c.periods||[]).reduce((b,p)=>b+num(p.sparkSpend),0),0);
-                const af=campaigns.reduce((a,c)=>a+(c.periods||[]).reduce((b,p)=>b+(p.affiliates||[]).reduce((s,a)=>s+num(a.amount),0),0),0);
-                return <>
-                  <Bar label="Creator Spend" value={cr} max={book.rev} color={B.blue}/>
-                  <Bar label="Spark Spend" value={sp} max={book.rev} color="#74b9e8"/>
-                  <Bar label="Affiliate Spend" value={af} max={book.rev} color={B.yellow}/>
-                  <Bar label="Profit" value={Math.max(0,book.profit)} max={book.rev} color={B.green}/>
-                  <div style={{ height:1,background:B.border,margin:"12px 0" }}/>
-                  <div style={{ display:"flex",gap:8 }}>
-                    <SmKpi label="Creator" value={fmt(cr)} color={B.blue}/>
-                    <SmKpi label="Spark" value={fmt(sp)} color="#74b9e8"/>
-                    <SmKpi label="Affiliate" value={fmt(af)} color={B.yellow}/>
-                  </div>
-                </>;
-              })()}
+    function Ring({ value, max, size=68 }) {
+      const r=(size-8)/2,circ=2*Math.PI*r,fill=max>0?Math.min(value/max,1):0;
+      return (
+        <svg width={size} height={size} style={{transform:"rotate(-90deg)"}}>
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={B.grey4} strokeWidth={6}/>
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={B.blue} strokeWidth={6} strokeDasharray={circ} strokeDashoffset={circ*(1-fill)} strokeLinecap="round" style={{transition:"stroke-dashoffset 0.5s"}}/>
+        </svg>
+      );
+    }
+
+    function Tag({ children, color }) {
+      return <span style={{background:`${color}12`,border:`1px solid ${color}28`,borderRadius:5,padding:"3px 9px",fontSize:11,color,fontWeight:500}}>{children}</span>;
+    }
+
+    function Block({ title, accent=B.blue, children }) {
+      return (
+        <div style={{background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:"18px 20px",marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:B.grey2,textTransform:"uppercase",letterSpacing:1,marginBottom:14,display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:3,height:12,background:accent,borderRadius:2}}/>
+            {title}
+          </div>
+          {children}
+        </div>
+      );
+    }
+
+    function EmbedPanel({ url, label }) {
+      const [show,setShow]=useState(false),[rdy,setRdy]=useState(false);
+      if(!url) return null;
+      return (
+        <div style={{marginBottom:8}}>
+          <div style={{display:"flex",alignItems:"center"}}>
+            <span style={{fontSize:12,color:B.grey2}}>{label}</span>
+            <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+              <button onClick={()=>{setShow(!show);setRdy(false);}} style={{background:show?B.blueLo:"transparent",border:`1px solid ${show?B.blue:B.border}`,borderRadius:6,padding:"4px 10px",color:show?B.blue:B.grey2,cursor:"pointer",fontSize:11}}>{show?"Hide":"Embed"}</button>
+              <a href={url} target="_blank" rel="noreferrer" style={{background:"transparent",border:`1px solid ${B.border}`,borderRadius:6,padding:"4px 10px",color:B.grey2,textDecoration:"none",fontSize:11}}>↗ Open</a>
             </div>
+          </div>
+          {show&&(
+            <div style={{marginTop:8,borderRadius:8,overflow:"hidden",border:`1px solid ${B.border}`,position:"relative"}}>
+              {!rdy&&<div style={{position:"absolute",inset:0,background:B.white,display:"flex",alignItems:"center",justifyContent:"center",zIndex:2}}>
+                <div style={{width:22,height:22,border:`2px solid ${B.blue}`,borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>
+              </div>}
+              <iframe src={url} width="100%" height="420" frameBorder="0" style={{display:"block"}} onLoad={()=>setRdy(true)} title={label} sandbox="allow-scripts allow-same-origin allow-popups allow-forms"/>
+            </div>
+          )}
+        </div>
+      );
+    }
 
-            <div style={{ flex:1,minWidth:240,background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:"20px 22px" }}>
-              <div style={{ fontWeight:600,fontSize:14,marginBottom:14 }}>Top Campaigns by Profit</div>
-              {campaigns.length===0&&<div style={{ color:B.grey3,fontSize:13 }}>No campaigns yet.</div>}
-              {[...campaigns].map(c=>({...c,...campaignTotals(c)})).sort((a,b)=>b.profit-a.profit).slice(0,5).map((c,i)=>(
-                <div key={c.id} style={{ display:"flex",alignItems:"center",gap:10,marginBottom:12 }}>
-                  <div style={{ width:22,height:22,borderRadius:6,background:i===0?B.yellowLo:B.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:i===0?B.yellow:B.grey3,fontWeight:700,border:`1px solid ${B.border}` }}>#{i+1}</div>
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:13,fontWeight:600 }}>{c.name||"Unnamed"}</div>
-                    <div style={{ fontSize:11,color:B.grey2 }}>{c.client} · {c.periods?.length||0} period{c.periods?.length!==1?"s":""}</div>
-                  </div>
-                  <div style={{ textAlign:"right" }}>
-                    <div style={{ fontSize:13,fontWeight:700,color:c.profit>=0?B.green:B.red }}>{fmt(c.profit)}</div>
-                    <div style={{ fontSize:11,color:mc(c.margin) }}>{pct(c.margin)}</div>
-                  </div>
-                </div>
+    function FileZone({ label, accept, onFile, info, color=B.blue, icon="📁" }) {
+      const ref=useRef();
+      return (
+        <div>
+          {label&&<label style={LS}>{label}</label>}
+          <div onClick={()=>ref.current.click()} style={{border:`1px dashed ${info?color:B.border2}`,borderRadius:8,padding:"12px 8px",cursor:"pointer",textAlign:"center",background:info?`${color}0a`:B.bg}}>
+            {info?<><div style={{fontSize:14}}>✓</div><div style={{fontSize:11,color,fontWeight:600,marginTop:2}}>{info.name}</div>{info.rows&&<div style={{fontSize:10,color:B.grey3}}>{info.rows} rows</div>}</>
+            :<><div style={{fontSize:16}}>{icon}</div><div style={{fontSize:11,color:B.grey3,marginTop:2}}>Click to upload</div><div style={{fontSize:10,color:B.grey3}}>{accept}</div></>}
+            <input ref={ref} type="file" accept={accept} style={{display:"none"}} onChange={e=>e.target.files[0]&&onFile(e.target.files[0])}/>
+          </div>
+        </div>
+      );
+    }
+
+    const LS={fontSize:11,color:B.grey2,fontWeight:600,letterSpacing:0.5,display:"block",marginBottom:6,textTransform:"uppercase"};
+    const IS={width:"100%",background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"9px 12px",color:B.black,fontSize:13,outline:"none",fontFamily:"inherit",boxSizing:"border-box"};
+    const ISsm={...IS,padding:"7px 10px",fontSize:12};
+
+    function PeriodEditor({ period, onChange, onDelete, canDelete }) {
+      const u=(f,v)=>onChange({...period,[f]:v});
+      const {rev,cr,sp,af,spend,profit,margin,activeCPM,goalViews}=periodCalc(period);
+      const affiliates=period.affiliates||[];
+      const addAffiliate=()=>onChange({...period,affiliates:[...affiliates,{id:Date.now()+Math.random(),name:"",amount:""}]});
+      const updateAff=(id,f,v)=>onChange({...period,affiliates:affiliates.map(a=>a.id===id?{...a,[f]:v}:a)});
+      const removeAff=id=>onChange({...period,affiliates:affiliates.filter(a=>a.id!==id)});
+      return (
+        <div style={{background:B.bg,border:`1px solid ${B.border}`,borderRadius:10,padding:"16px",marginBottom:10}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+            <div style={{flex:1}}>
+              <label style={LS}>Date Range</label>
+              <DateRangePicker startDate={period.startDate} endDate={period.endDate} onChange={(s,e)=>onChange({...period,startDate:s,endDate:e})}/>
+            </div>
+            <div style={{flexShrink:0}}>
+              <label style={LS}>Status</label>
+              <div style={{display:"flex",gap:6}}>
+                {STATUSES.map(s=>(
+                  <button key={s} onClick={()=>u("status",s)} style={{background:period.status===s?SB[s]:"transparent",border:`1px solid ${period.status===s?SC[s]:B.border}`,borderRadius:6,padding:"5px 10px",color:period.status===s?SC[s]:B.grey2,cursor:"pointer",fontSize:11,fontWeight:600}}>{s}</button>
+                ))}
+              </div>
+            </div>
+            {canDelete&&<button onClick={onDelete} style={{marginLeft:"auto",alignSelf:"flex-end",background:"transparent",border:`1px solid ${B.border}`,borderRadius:6,padding:"5px 10px",color:B.grey3,cursor:"pointer",fontSize:11}}>Remove</button>}
+          </div>
+          {(rev>0||spend>0)&&(
+            <div style={{display:"flex",gap:14,background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"8px 14px",marginBottom:12,flexWrap:"wrap"}}>
+              {[{l:"Profit",v:fmt(profit),c:mc(margin)},{l:"Margin",v:pct(margin),c:mc(margin)},{l:"Active CPM",v:fmtD(activeCPM),c:B.blue},{l:"Goal Views",v:fmtN(goalViews),c:B.grey1}].map(({l,v,c})=>(
+                <div key={l}><div style={{fontSize:9,color:B.grey3,textTransform:"uppercase",letterSpacing:0.8}}>{l}</div><div style={{fontSize:13,fontWeight:700,color:c}}>{v}</div></div>
               ))}
             </div>
+          )}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:12}}>
+            <div><label style={LS}>Revenue</label><CurrencyInput value={period.revenue} onChange={v=>u("revenue",v)} style={ISsm}/></div>
+            <div><label style={LS}>Creator Spend</label><CurrencyInput value={period.creatorSpend} onChange={v=>u("creatorSpend",v)} style={ISsm}/></div>
+            <div><label style={LS}>Spark Spend</label><CurrencyInput value={period.sparkSpend} onChange={v=>u("sparkSpend",v)} style={ISsm}/></div>
           </div>
-
-          <div style={{ display:"flex",gap:10,flexWrap:"wrap" }}>
-            {STATUSES.map(s=>{
-              const cs=campaigns.filter(c=>derivedStatus(c.periods)===s);
-              const rev=cs.reduce((a,c)=>a+campaignTotals(c).rev,0);
-              const profit=cs.reduce((a,c)=>a+campaignTotals(c).profit,0);
-              return(
-                <div key={s} style={{ flex:1,minWidth:160,background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:"16px 18px" }}>
-                  <div style={{ display:"flex",alignItems:"center",gap:7,marginBottom:10 }}>
-                    <div style={{ width:7,height:7,borderRadius:"50%",background:SC[s] }}/>
-                    <div style={{ fontSize:12,fontWeight:600,color:SC[s] }}>{s}</div>
-                    <div style={{ marginLeft:"auto",fontSize:11,color:B.grey3 }}>{cs.length} deals</div>
-                  </div>
-                  <div style={{ display:"flex",gap:16 }}>
-                    <div><div style={{ color:B.grey3,fontSize:10,textTransform:"uppercase",letterSpacing:0.8,marginBottom:2 }}>Revenue</div><div style={{ fontSize:15,fontWeight:700 }}>{fmt(rev)}</div></div>
-                    <div><div style={{ color:B.grey3,fontSize:10,textTransform:"uppercase",letterSpacing:0.8,marginBottom:2 }}>Profit</div><div style={{ fontSize:15,fontWeight:700,color:profit>=0?B.green:B.red }}>{fmt(profit)}</div></div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>}
-
-        {/* ── CAMPAIGNS ── */}
-        {tab==="Campaigns"&&<>
-          <div style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:16 }}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:12}}>
             <div>
-              <div style={{ fontSize:20,fontWeight:700,marginBottom:2 }}>All Campaigns</div>
-              <div style={{ fontSize:13,color:B.grey2 }}>Click any campaign to expand. Status is derived from period statuses.</div>
+              <label style={LS}>Target CPM</label>
+              <CurrencyInput value={period.targetCPM} onChange={v=>u("targetCPM",v)} placeholder="$0.00" style={ISsm}/>
+              {goalViews>0&&<div style={{fontSize:10,color:B.blue,marginTop:3}}>Goal: {fmtN(goalViews)} views</div>}
+            </div>
+            <div>
+              <label style={LS}>Total Views</label>
+              <input value={period.totalViews||""} onChange={e=>u("totalViews",e.target.value.replace(/[^0-9]/g,""))} placeholder="0" style={ISsm}/>
+              {activeCPM>0&&<div style={{fontSize:10,color:B.blue,marginTop:3}}>Active CPM: {fmtD(activeCPM)}</div>}
+            </div>
+            <div style={{display:"flex",flexDirection:"column",justifyContent:"center",background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"8px 12px",marginTop:18}}>
+              <div style={{fontSize:10,color:B.grey3,textTransform:"uppercase",letterSpacing:0.8,marginBottom:2}}>Goal Views (auto)</div>
+              <div style={{fontSize:14,fontWeight:700,color:B.black}}>{goalViews>0?fmtN(goalViews):"—"}</div>
             </div>
           </div>
+          <div style={{background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"12px 14px",marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",marginBottom:8}}>
+              <div style={{fontSize:11,fontWeight:700,color:B.grey2,textTransform:"uppercase",letterSpacing:0.8}}>🤝 Affiliate Partners</div>
+              {af>0&&<div style={{marginLeft:"auto",fontSize:12,fontWeight:700,color:B.yellow}}>Total: {fmt(af)}</div>}
+            </div>
+            {affiliates.length===0&&<div style={{fontSize:12,color:B.grey3,marginBottom:8}}>No affiliate partners added yet.</div>}
+            {affiliates.map(a=>(
+              <div key={a.id} style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
+                <input value={a.name} onChange={e=>updateAff(a.id,"name",e.target.value)} placeholder="Partner name" style={{...ISsm,flex:2}}/>
+                <CurrencyInput value={a.amount} onChange={v=>updateAff(a.id,"amount",v)} style={{...ISsm,flex:1}}/>
+                <button onClick={()=>removeAff(a.id)} style={{background:"transparent",border:`1px solid ${B.border}`,borderRadius:6,padding:"5px 9px",color:B.grey3,cursor:"pointer",fontSize:12,flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            <button onClick={addAffiliate} style={{background:"transparent",border:`1px dashed ${B.blue}`,borderRadius:6,padding:"6px 14px",color:B.blue,cursor:"pointer",fontSize:12,fontWeight:600,width:"100%"}}>+ Add Partner</button>
+          </div>
+          <div><label style={LS}>Period Notes</label><textarea value={period.notes||""} onChange={e=>u("notes",e.target.value)} rows={2} placeholder="Notes specific to this period..." style={{...ISsm,resize:"vertical",lineHeight:1.5,width:"100%"}}/></div>
+        </div>
+      );
+    }
 
-          {campaigns.length===0&&(
-            <div style={{ background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:60,textAlign:"center" }}>
-              <div style={{ fontSize:32,marginBottom:10 }}>📋</div>
-              <div style={{ fontSize:14,fontWeight:600,color:B.grey1,marginBottom:5 }}>No campaigns yet</div>
-              <div style={{ fontSize:13,color:B.grey3 }}>Click "+ New Campaign" to get started</div>
+    function App() {
+      const [tab,setTab]=useState("Overview");
+      const [campaigns,setCampaigns]=useState([]);
+      const [editing,setEditing]=useState(null);
+      const [form,setForm]=useState(defaultCampaign());
+      const [expanded,setExpanded]=useState(null);
+      const [expandedPeriod,setExpandedPeriod]=useState({});
+      const [csv,setCsv]=useState({});
+      const [ready,setReady]=useState(false);
+      const [showExport,setShowExport]=useState(false);
+      const [workerUrl,setWorkerUrl]=useState(()=>localStorage.getItem("ss_worker_url")||"https://sideshift-proxy.djohnson-191.workers.dev");
+      const [showSettings,setShowSettings]=useState(false);
+      const [liveData,setLiveData]=useState(null);
+      const [liveLoading,setLiveLoading]=useState(false);
+      const [liveError,setLiveError]=useState(null);
+      const [programs,setPrograms]=useState([]);
+      const [lastRefresh,setLastRefresh]=useState(null);
+
+      useEffect(()=>{const s=localStorage.getItem("ss_mp_v1");if(s)try{setCampaigns(JSON.parse(s))}catch{};setReady(true);},[]);
+      useEffect(()=>{if(ready)localStorage.setItem("ss_mp_v1",JSON.stringify(campaigns));},[campaigns,ready]);
+
+      const book=campaigns.reduce((a,c)=>{const t=campaignTotals(c);a.rev+=t.rev;a.spend+=t.spend;a.profit+=t.profit;a.views+=t.views;return a;},{rev:0,spend:0,profit:0,views:0});
+      book.margin=book.rev>0?(book.profit/book.rev)*100:0;
+      book.activeCPM=book.views>0?(book.rev/(book.views/1000)):0;
+
+      const inp=f=>({value:form[f]||"",onChange:e=>setForm(p=>({...p,[f]:e.target.value}))});
+      const updatePeriod=(id,updated)=>setForm(p=>({...p,periods:p.periods.map(pr=>pr.id===id?updated:pr)}));
+      const addPeriod=()=>{const last=form.periods[form.periods.length-1];setForm(p=>({...p,periods:[...p.periods,defaultPeriod(p.periods.length,last)]}));};
+      const removePeriod=id=>setForm(p=>({...p,periods:p.periods.filter(pr=>pr.id!==id)}));
+      const parseCSV=(file,key)=>{Papa.parse(file,{header:true,skipEmptyLines:true,dynamicTyping:true,complete:(r)=>{const info={name:file.name,rows:r.data.length,data:r.data,fields:r.meta.fields};setCsv(p=>({...p,[key]:info}));setForm(p=>({...p,[`${key}CSV`]:{name:file.name,rows:r.data.length}}));}});};
+      const addDoc=(file,type)=>setForm(p=>({...p,[type]:[...(p[type]||[]),{name:file.name,size:(file.size/1024).toFixed(0)+"KB"}]}));
+      const save=()=>{if(!form.name.trim())return;if(editing!==null)setCampaigns(p=>p.map(c=>c.id===editing?{...form,id:editing}:c));else setCampaigns(p=>[...p,{...form,id:Date.now()}]);setForm(defaultCampaign());setEditing(null);setCsv({});setTab("Campaigns");};
+      const editCampaign=c=>{setForm({...c});setEditing(c.id);setCsv({});setTab("Add / Edit");};
+      const delCampaign=id=>setCampaigns(p=>p.filter(c=>c.id!==id));
+      const newCamp=()=>{setForm(defaultCampaign());setEditing(null);setCsv({});setTab("Add / Edit");};
+
+      const fetchLive = async () => {
+        if(!workerUrl) return;
+        setLiveLoading(true); setLiveError(null);
+        try {
+          const url = workerUrl.replace(/\/$/, "");
+          const overviewRes = await fetch(`${url}?path=/analytics/overview`,{method:"GET",mode:"cors",headers:{"Accept":"application/json"}});
+          if(!overviewRes.ok) throw new Error(`HTTP ${overviewRes.status}`);
+          const overviewData = await overviewRes.json();
+          let progsData = [];
+          try { const pr = await fetch(`${url}?path=/programs`,{mode:"cors"}); const pg = await pr.json(); progsData = pg?.data||[]; } catch(e){}
+          setLiveData({overview:overviewData?.data?.summary||{},topPosts:overviewData?.data?.topPosts||[],topCreators:overviewData?.data?.topCreators||[],platformBreakdown:overviewData?.data?.platformBreakdown||{}});
+          setPrograms(progsData);
+          setLastRefresh(new Date());
+        } catch(e) {
+          setLiveError(e.message);
+        } finally { setLiveLoading(false); }
+      };
+
+      useEffect(()=>{fetchLive();},[workerUrl]);
+      useEffect(()=>{const i=setInterval(fetchLive,60000);return()=>clearInterval(i);},[workerUrl]);
+
+      const exportData=()=>setShowExport(true);
+      const importData=e=>{const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=ev=>{try{const data=JSON.parse(ev.target.result);if(Array.isArray(data)){setCampaigns(data);alert(`✅ Imported ${data.length} campaign(s).`);}}catch{alert("Invalid file.");}};reader.readAsText(file);e.target.value="";};
+      const fmtDateRange=(p)=>{if(!p.startDate)return "";const s=new Date(p.startDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"});const e=p.endDate?new Date(p.endDate+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"";return e?`${s} – ${e}`:s;};
+
+      return (
+        <div style={{minHeight:"100vh",background:B.bg,fontFamily:"'Inter',-apple-system,sans-serif",color:B.black,paddingBottom:80}}>
+          <style>{`@keyframes spin{to{transform:rotate(360deg)}} *{box-sizing:border-box} input::placeholder,textarea::placeholder{color:${B.grey3}} input:focus,textarea:focus{border-color:${B.blue}!important;outline:none}`}</style>
+
+          {showSettings&&(
+            <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <div style={{background:B.white,borderRadius:12,padding:24,width:480,boxShadow:"0 20px 60px rgba(0,0,0,0.15)"}}>
+                <div style={{display:"flex",alignItems:"center",marginBottom:16}}>
+                  <div style={{fontWeight:700,fontSize:15}}>⚙️ API Settings</div>
+                  <button onClick={()=>setShowSettings(false)} style={{marginLeft:"auto",background:"transparent",border:"none",fontSize:18,color:B.grey2,cursor:"pointer"}}>✕</button>
+                </div>
+                <label style={LS}>Cloudflare Worker URL</label>
+                <input value={workerUrl} onChange={e=>{setWorkerUrl(e.target.value);localStorage.setItem("ss_worker_url",e.target.value);}} placeholder="https://sideshift-proxy.yourname.workers.dev" style={{...IS,marginBottom:8}}/>
+                <div style={{fontSize:11,color:B.grey3,marginBottom:16}}>Your worker securely proxies requests to SideShift using your API key.</div>
+                <button onClick={()=>{fetchLive();setShowSettings(false);}} style={{background:B.black,border:"none",borderRadius:8,padding:"9px 20px",color:B.white,cursor:"pointer",fontSize:13,fontWeight:600}}>Save &amp; Reconnect</button>
+              </div>
             </div>
           )}
 
-          {campaigns.map(c=>{
-            const T=campaignTotals(c);
-            const open=expanded===c.id;
-            const periods=c.periods||[];
-            const status=derivedStatus(periods);
-
-            return(
-              <div key={c.id} style={{ background:B.card,border:`1px solid ${open?B.blue:B.border}`,borderRadius:10,marginBottom:8,overflow:"hidden",transition:"border-color 0.2s",boxShadow:open?`0 0 0 3px ${B.blueLo}`:"none" }}>
-                <div style={{ display:"flex",alignItems:"center",gap:12,padding:"14px 18px",cursor:"pointer" }} onClick={()=>setExpanded(open?null:c.id)}>
-                  <div style={{ flex:2 }}>
-                    <div style={{ fontWeight:600,fontSize:14,marginBottom:2 }}>{c.name||"Unnamed"}</div>
-                    <div style={{ fontSize:12,color:B.grey2,display:"flex",alignItems:"center",gap:8 }}>
-                      {c.client&&<span>{c.client}</span>}
-                      <span style={{ background:B.bg,border:`1px solid ${B.border}`,borderRadius:4,padding:"1px 7px",fontSize:11,color:B.grey2 }}>{periods.length} period{periods.length!==1?"s":""}</span>
-                      {periods.length>0&&<span style={{ color:B.grey3,fontSize:11 }}>{fmtDateRange(periods[0])}{periods.length>1?` → ${fmtDateRange(periods[periods.length-1])}`:""}</span>}
-                    </div>
-                  </div>
-                  <span style={{ fontSize:11,fontWeight:600,color:SC[status],background:SB[status],border:`1px solid ${SC[status]}28`,borderRadius:5,padding:"3px 9px" }}>{status}</span>
-                  {[{l:"Revenue",v:fmt(T.rev),col:B.black},{l:"Spend",v:fmt(T.spend),col:B.grey1},{l:"Profit",v:fmt(T.profit),col:mc(T.margin)},{l:"Margin",v:pct(T.margin),col:mc(T.margin)},{l:"Views",v:fmtN(T.views),col:B.black},{l:"Active CPM",v:fmtD(T.activeCPM),col:B.blue}].map(({l,v,col})=>(
-                    <div key={l} style={{ textAlign:"right",minWidth:70 }}>
-                      <div style={{ fontSize:10,color:B.grey3 }}>{l}</div>
-                      <div style={{ fontWeight:700,fontSize:12,color:col }}>{v}</div>
-                    </div>
-                  ))}
-                  <div style={{ color:B.grey3,fontSize:14,transition:"transform 0.2s",transform:open?"rotate(180deg)":"none" }}>▾</div>
+          {showExport&&(
+            <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <div style={{background:B.white,borderRadius:12,padding:24,width:560,maxHeight:"80vh",display:"flex",flexDirection:"column",boxShadow:"0 20px 60px rgba(0,0,0,0.15)"}}>
+                <div style={{display:"flex",alignItems:"center",marginBottom:6}}>
+                  <div style={{fontWeight:700,fontSize:15}}>Export Data</div>
+                  <button onClick={()=>setShowExport(false)} style={{marginLeft:"auto",background:"transparent",border:"none",fontSize:18,color:B.grey2,cursor:"pointer"}}>✕</button>
                 </div>
+                <div style={{fontSize:13,color:B.grey2,marginBottom:12}}>Copy below → save as <strong>backup.json</strong></div>
+                <textarea readOnly value={JSON.stringify(campaigns,null,2)} style={{flex:1,minHeight:300,background:B.bg,border:`1px solid ${B.border}`,borderRadius:8,padding:12,fontSize:11,fontFamily:"monospace",color:B.grey1,resize:"none",outline:"none"}} onClick={e=>e.target.select()}/>
+                <button onClick={()=>{const el=document.querySelector("textarea[readonly]");el.select();document.execCommand("copy");alert("✅ Copied!");}} style={{marginTop:12,background:B.black,border:"none",borderRadius:8,padding:"10px",color:B.white,cursor:"pointer",fontSize:13,fontWeight:600}}>Copy to Clipboard</button>
+              </div>
+            </div>
+          )}
 
-                {open&&(
-                  <div style={{ borderTop:`1px solid ${B.border}`,background:B.bg,padding:18 }}>
-                    <div style={{ display:"flex",gap:8,flexWrap:"wrap",marginBottom:14 }}>
-                      <SmKpi label="Creator" value={fmt(T.cr)} color={B.blue}/>
-                      <SmKpi label="Spark" value={fmt(T.sp)} color="#74b9e8"/>
-                      <SmKpi label="Affiliate" value={fmt(T.af)} color={B.yellow}/>
-                      <SmKpi label="Total Spend" value={fmt(T.spend)} color={B.grey1}/>
-                      <SmKpi label="Net Profit" value={fmt(T.profit)} color={mc(T.margin)}/>
-                      <SmKpi label="Total Views" value={fmtN(T.views)} color={B.black}/>
-                      <SmKpi label="Active CPM" value={fmtD(T.activeCPM)} color={B.blue}/>
-                    </div>
+          <div style={{background:B.white,borderBottom:`1px solid ${B.border}`}}>
+            <div style={{maxWidth:1200,margin:"0 auto",padding:"0 28px",display:"flex",alignItems:"center",height:56,gap:32}}>
+              <div style={{display:"flex",alignItems:"center",flexShrink:0}}>
+                <span style={{fontWeight:700,fontSize:16,letterSpacing:-0.4,color:B.black}}>SideShift</span>
+                <span style={{color:B.border2,fontSize:16,fontWeight:300,margin:"0 14px"}}>|</span>
+                <span style={{color:B.grey2,fontSize:13,fontWeight:500}}>P&amp;L Tracker</span>
+              </div>
+              <div style={{display:"flex",alignItems:"stretch",height:"100%",gap:2}}>
+                {TABS.map(t=>{const active=tab===t;return(
+                  <button key={t} onClick={()=>{setTab(t);if(t==="Add / Edit"&&!editing)newCamp();}} style={{background:"transparent",border:"none",borderBottom:`2px solid ${active?B.blue:"transparent"}`,borderTop:"2px solid transparent",color:active?B.blue:B.grey2,padding:"0 14px",cursor:"pointer",fontSize:13,fontWeight:active?600:400,transition:"all 0.15s",whiteSpace:"nowrap"}}>
+                    {t==="Add / Edit"&&editing?"✏️ Editing":t}
+                  </button>);
+                })}
+              </div>
+              <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
+                <span style={{fontSize:12,color:B.green,background:B.greenLo,border:`1px solid ${B.green}25`,borderRadius:20,padding:"3px 10px",fontWeight:500}}>{campaigns.filter(c=>derivedStatus(c.periods)==="Active").length} Active</span>
+                <span style={{fontSize:12,color:B.grey2,background:B.bg,border:`1px solid ${B.border}`,borderRadius:20,padding:"3px 10px",fontWeight:500}}>{campaigns.length} Total</span>
+                <button onClick={exportData} style={{background:"transparent",border:`1px solid ${B.border}`,borderRadius:7,padding:"7px 14px",color:B.grey1,cursor:"pointer",fontSize:12,fontWeight:500}}>⬇ Export</button>
+                <label style={{background:"transparent",border:`1px solid ${B.border}`,borderRadius:7,padding:"7px 14px",color:B.grey1,cursor:"pointer",fontSize:12,fontWeight:500}}>⬆ Import<input type="file" accept=".json" style={{display:"none"}} onChange={importData}/></label>
+                <button onClick={()=>setShowSettings(true)} style={{background:"transparent",border:`1px solid ${B.border}`,borderRadius:7,padding:"7px 14px",color:liveData?B.green:liveError?B.red:B.grey1,cursor:"pointer",fontSize:12,fontWeight:500}} title="API Settings">
+                  {liveLoading?"⟳ Syncing…":liveData?"● Live":"○ Connect API"}
+                </button>
+                <button onClick={newCamp} style={{background:B.black,border:"none",borderRadius:7,padding:"7px 16px",color:B.white,cursor:"pointer",fontSize:13,fontWeight:600}}>+ New Campaign</button>
+              </div>
+            </div>
+          </div>
 
-                    {/* Period pills */}
-                    <div style={{ background:B.white,border:`1px solid ${B.border}`,borderRadius:10,padding:"14px 16px",marginBottom:14 }}>
-                      <div style={{ fontSize:12,fontWeight:600,color:B.grey2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:12 }}>Period Breakdown</div>
-                      <div style={{ display:"flex",gap:8,flexWrap:"wrap",marginBottom:14 }}>
-                        {periods.map(p=>{
-                          const pt=periodCalc(p);
-                          const isOpen=expandedPeriod[p.id];
-                          return(
-                            <button key={p.id} onClick={()=>setExpandedPeriod(prev=>({...prev,[p.id]:!prev[p.id]}))}
-                              style={{ background:isOpen?mcBg(pt.margin):B.bg,border:`1px solid ${isOpen?mc(pt.margin):B.border}`,borderRadius:8,padding:"8px 14px",cursor:"pointer",textAlign:"left",transition:"all 0.15s",minWidth:120 }}>
-                              <div style={{ fontSize:11,fontWeight:600,color:B.grey1,marginBottom:2 }}>{fmtDateRange(p)||"No date"}</div>
-                              <div style={{ fontSize:14,fontWeight:700,color:mc(pt.margin) }}>{pct(pt.margin)}</div>
-                              <div style={{ fontSize:11,color:B.grey2 }}>{fmt(pt.profit)}</div>
-                              <div style={{ fontSize:10,color:SC[p.status||"Active"],marginTop:2,fontWeight:600 }}>{p.status||"Active"}</div>
-                            </button>
-                          );
-                        })}
+          <div style={{maxWidth:1200,margin:"0 auto",padding:"24px 28px"}}>
+            {tab==="Overview"&&<>
+              {liveData&&(()=>{
+                const s=liveData.overview;
+                const pb=liveData.platformBreakdown;
+                return (
+                  <div style={{background:B.blueLo,border:`1px solid ${B.blueMid}`,borderRadius:10,padding:"16px 20px",marginBottom:14}}>
+                    <div style={{display:"flex",alignItems:"center",marginBottom:12}}>
+                      <div style={{fontSize:12,fontWeight:700,color:B.blue,textTransform:"uppercase",letterSpacing:0.8}}>📡 Live — SideShift Analytics</div>
+                      <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10}}>
+                        {lastRefresh&&<span style={{fontSize:11,color:B.grey2}}>Updated {lastRefresh.toLocaleTimeString()}</span>}
+                        <button onClick={fetchLive} disabled={liveLoading} style={{background:"transparent",border:`1px solid ${B.blue}30`,borderRadius:6,padding:"4px 10px",color:B.blue,cursor:"pointer",fontSize:11}}>{liveLoading?"Syncing…":"↻ Refresh"}</button>
                       </div>
-
-                      {periods.filter(p=>expandedPeriod[p.id]).map(p=>{
-                        const pt=periodCalc(p);
-                        return(
-                          <div key={p.id} style={{ background:B.bg,border:`1px solid ${B.border}`,borderRadius:8,padding:"12px 14px",marginBottom:8 }}>
-                            <div style={{ fontWeight:600,fontSize:13,marginBottom:10 }}>{fmtDateRange(p)}</div>
-                            <div style={{ display:"flex",gap:8,flexWrap:"wrap",marginBottom:8 }}>
-                              <SmKpi label="Revenue" value={fmt(pt.rev)}/>
-                              <SmKpi label="Creator" value={fmt(pt.cr)} color={B.blue}/>
-                              <SmKpi label="Spark" value={fmt(pt.sp)} color="#74b9e8"/>
-                              <SmKpi label="Affiliate" value={fmt(pt.af)} color={B.yellow}/>
-                              <SmKpi label="Profit" value={fmt(pt.profit)} color={mc(pt.margin)}/>
-                              <SmKpi label="Margin" value={pct(pt.margin)} color={mc(pt.margin)}/>
-                              <SmKpi label="Total Views" value={fmtN(pt.views)}/>
-                              <SmKpi label="Active CPM" value={fmtD(pt.activeCPM)} color={B.blue}/>
-                              <SmKpi label="Goal Views" value={pt.goalViews>0?fmtN(pt.goalViews):"—"} color={B.grey1}/>
-                            </div>
-                            {(p.affiliates||[]).length>0&&(
-                              <div style={{ marginTop:8 }}>
-                                <div style={{ fontSize:10,fontWeight:700,color:B.grey3,textTransform:"uppercase",letterSpacing:0.8,marginBottom:6 }}>Affiliate Partners</div>
-                                <div style={{ display:"flex",gap:6,flexWrap:"wrap" }}>
-                                  {p.affiliates.map(a=>(
-                                    <div key={a.id} style={{ background:B.yellowLo,border:`1px solid ${B.yellow}25`,borderRadius:6,padding:"4px 10px",fontSize:12 }}>
-                                      <span style={{ fontWeight:600,color:B.grey1 }}>{a.name||"Partner"}</span>
-                                      <span style={{ color:B.yellow,fontWeight:700,marginLeft:6 }}>{fmt(num(a.amount))}</span>
-                                    </div>
-                                  ))}
-                                  <div style={{ background:B.bg,border:`1px solid ${B.border}`,borderRadius:6,padding:"4px 10px",fontSize:12,color:B.grey2,fontWeight:600 }}>Total: {fmt(pt.af)}</div>
-                                </div>
-                              </div>
-                            )}
-                            {p.notes&&<div style={{ fontSize:12,color:B.grey1,marginTop:8,padding:"8px 10px",background:B.white,borderRadius:6,border:`1px solid ${B.border}` }}>{p.notes}</div>}
-                          </div>
-                        );
-                      })}
                     </div>
-
-                    {(c.analyticsUrl||c.affiliateAnalyticsUrl)&&(
-                      <div style={{ background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"12px 14px",marginBottom:12 }}>
-                        <div style={{ fontSize:11,fontWeight:600,color:B.grey2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10 }}>Analytics</div>
-                        <EmbedPanel url={c.analyticsUrl} label="Your Analytics Dashboard"/>
-                        <EmbedPanel url={c.affiliateAnalyticsUrl} label="Affiliate Analytics"/>
-                      </div>
-                    )}
-
-                    {(c.creatorCSV||c.sparkCSV||c.sparkAdsCSV||c.invoices?.length>0||c.otherFiles?.length>0)&&(
-                      <div style={{ background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"12px 14px",marginBottom:12 }}>
-                        <div style={{ fontSize:11,fontWeight:600,color:B.grey2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:8 }}>Documents</div>
-                        <div style={{ display:"flex",gap:6,flexWrap:"wrap" }}>
-                          {c.creatorCSV&&<Tag color={B.blue}>🎨 {c.creatorCSV.name}</Tag>}
-                          {c.sparkCSV&&<Tag color="#74b9e8">✨ {c.sparkCSV.name}</Tag>}
-                          {c.sparkAdsCSV&&<Tag color="#74b9e8">⚡ {c.sparkAdsCSV.name}</Tag>}
-                          {c.invoices?.map((f,i)=><Tag key={i} color={B.green}>🧾 {f.name}</Tag>)}
-                          {c.otherFiles?.map((f,i)=><Tag key={i} color={B.grey2}>📎 {f.name}</Tag>)}
+                    <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}}>
+                      {[{l:"Total Views",v:fmtN(s.totalViews||0)},{l:"Total Posts",v:fmtN(s.totalPosts||0)},{l:"Engagement Rate",v:`${(s.engagementRate||0).toFixed(2)}%`},{l:"Total Likes",v:fmtN(s.totalLikes||0)},{l:"Active Contracts",v:String(s.activeContracts||0)},{l:"Unique Creators",v:String(s.uniqueCreators||0)}].map(({l,v})=>(
+                        <div key={l} style={{background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"10px 16px",flex:1,minWidth:100}}>
+                          <div style={{fontSize:10,color:B.grey2,fontWeight:600,textTransform:"uppercase",letterSpacing:0.8,marginBottom:4}}>{l}</div>
+                          <div style={{fontSize:18,fontWeight:700,color:B.black}}>{v}</div>
                         </div>
-                      </div>
-                    )}
-
-                    {[{l:"Findings",v:c.findings},{l:"Future Plans",v:c.future},{l:"What to Do Better",v:c.improvements}].some(x=>x.v)&&(
-                      <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12 }}>
-                        {[{l:"Findings",v:c.findings},{l:"Future Plans",v:c.future},{l:"What to Do Better",v:c.improvements}].filter(x=>x.v).map(({l,v})=>(
-                          <div key={l} style={{ background:B.white,borderRadius:8,padding:"10px 12px",border:`1px solid ${B.border}` }}>
-                            <div style={{ fontSize:10,fontWeight:600,color:B.grey3,textTransform:"uppercase",letterSpacing:0.5,marginBottom:4 }}>{l}</div>
-                            <div style={{ fontSize:12,color:B.grey1,lineHeight:1.6 }}>{v}</div>
+                      ))}
+                    </div>
+                    {pb&&Object.keys(pb).length>0&&(
+                      <div style={{display:"flex",gap:10,marginBottom:12}}>
+                        {Object.entries(pb).map(([platform,data])=>(
+                          <div key={platform} style={{background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"10px 16px",flex:1}}>
+                            <div style={{fontSize:11,fontWeight:700,color:B.grey1,textTransform:"capitalize",marginBottom:6}}>{platform==="tiktok"?"🎵":"📷"} {platform}</div>
+                            <div style={{display:"flex",gap:16}}>
+                              <div><div style={{fontSize:9,color:B.grey3,textTransform:"uppercase",letterSpacing:0.8}}>Views</div><div style={{fontSize:14,fontWeight:700}}>{fmtN(data.views||0)}</div></div>
+                              <div><div style={{fontSize:9,color:B.grey3,textTransform:"uppercase",letterSpacing:0.8}}>Posts</div><div style={{fontSize:14,fontWeight:700}}>{fmtN(data.posts||0)}</div></div>
+                            </div>
                           </div>
                         ))}
                       </div>
                     )}
-
-                    <div style={{ display:"flex",gap:8 }}>
-                      <button onClick={()=>editCampaign(c)} style={{ background:B.blueLo,border:`1px solid ${B.blue}28`,borderRadius:7,padding:"7px 16px",color:B.blue,cursor:"pointer",fontSize:12,fontWeight:600 }}>✏️ Edit Campaign</button>
-                      <button onClick={()=>{if(window.confirm(`Delete "${c.name||"this campaign"}"?`))delCampaign(c.id);}} style={{ background:"transparent",border:`1px solid ${B.border}`,borderRadius:7,padding:"7px 14px",color:B.red,cursor:"pointer",fontSize:12 }}>Delete</button>
-                    </div>
+                    {liveData.topPosts?.length>0&&(
+                      <div style={{background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"12px 14px"}}>
+                        <div style={{fontSize:11,fontWeight:700,color:B.grey2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10}}>🔥 Top Posts</div>
+                        {liveData.topPosts.slice(0,5).map((p,i)=>(
+                          <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                            <div style={{width:20,height:20,borderRadius:5,background:i===0?B.yellowLo:B.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:i===0?B.yellow:B.grey3,fontWeight:700,border:`1px solid ${B.border}`,flexShrink:0}}>#{i+1}</div>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:12,fontWeight:500,color:B.black,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.title}</div>
+                              <div style={{fontSize:10,color:B.grey2}}>{p.creator} · {p.platform==="tiktok"?"🎵":"📷"}</div>
+                            </div>
+                            <div style={{textAlign:"right",flexShrink:0}}>
+                              <div style={{fontSize:12,fontWeight:700,color:B.black}}>{fmtN(p.views)}</div>
+                              <div style={{fontSize:10,color:B.grey2}}>{fmtN(p.likes)} likes</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </>}
-
-        {/* ── ADD / EDIT ── */}
-        {tab==="Add / Edit"&&(
-          <div style={{ maxWidth:780 }}>
-            <div style={{ marginBottom:20 }}>
-              <div style={{ fontSize:20,fontWeight:700,marginBottom:3 }}>{editing?"Edit Campaign":"New Campaign"}</div>
-              <div style={{ fontSize:13,color:B.grey2 }}>Add periods to track month-by-month performance. Status is auto-derived from period statuses.</div>
-            </div>
-
-            <Block title="Campaign Info">
-              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:12 }}>
-                <div><label style={LS}>Campaign Name</label><input {...inp("name")} placeholder="e.g. Nike Spring 2025" style={IS}/></div>
-                <div><label style={LS}>Client / Brand</label><input {...inp("client")} placeholder="e.g. Nike" style={IS}/></div>
-              </div>
-            </Block>
-
-            <Block title={`Periods — ${form.periods.length} total`} accent={B.blue}>
-              <div style={{ fontSize:12,color:B.grey2,marginBottom:14 }}>Status is set per period. Active CPM and Goal Views are calculated automatically from your inputs.</div>
-              {form.periods.map(p=>(
-                <PeriodEditor key={p.id} period={p} onChange={updated=>updatePeriod(p.id,updated)} onDelete={()=>removePeriod(p.id)} canDelete={form.periods.length>1}/>
-              ))}
-              <button onClick={addPeriod} style={{ background:"transparent",border:`1px dashed ${B.blue}`,borderRadius:8,padding:"9px 18px",color:B.blue,cursor:"pointer",fontSize:13,fontWeight:600,width:"100%",marginTop:4 }}>
-                + Add Period
-              </button>
-              {(()=>{
-                const rev=form.periods.reduce((a,p)=>a+num(p.revenue),0);
-                const spend=form.periods.reduce((a,p)=>a+periodCalc(p).spend,0);
-                const views=form.periods.reduce((a,p)=>a+num(p.totalViews),0);
-                const profit=rev-spend,margin=rev>0?(profit/rev)*100:0;
-                const activeCPM=views>0?(rev/(views/1000)):0;
-                if(rev+spend===0) return null;
-                return <div style={{ background:B.blueLo,border:`1px solid ${B.blueMid}`,borderRadius:8,padding:"11px 16px",marginTop:12,display:"flex",gap:24,alignItems:"center",flexWrap:"wrap" }}>
-                  <div style={{ fontSize:10,color:B.blue,fontWeight:700,letterSpacing:0.8 }}>CAMPAIGN TOTAL</div>
-                  {[{l:"REVENUE",v:fmt(rev),c:B.black},{l:"SPEND",v:fmt(spend),c:B.grey1},{l:"PROFIT",v:fmt(profit),c:mc(margin)},{l:"MARGIN",v:pct(margin),c:mc(margin)},{l:"VIEWS",v:fmtN(views),c:B.black},{l:"ACTIVE CPM",v:fmtD(activeCPM),c:B.blue}].map(({l,v,c})=>(
-                    <div key={l}><div style={{ fontSize:9,color:B.grey3,textTransform:"uppercase",letterSpacing:1 }}>{l}</div><div style={{ fontWeight:700,color:c,fontSize:14 }}>{v}</div></div>
-                  ))}
-                </div>;
+                );
               })()}
-            </Block>
 
-            <Block title="Analytics Links" accent={B.blue}>
-              <div style={{ marginBottom:12 }}>
-                <label style={LS}>Your Analytics Dashboard URL</label>
-                <input {...inp("analyticsUrl")} placeholder="https://your-dashboard.com/share/..." style={IS}/>
-                <div style={{ fontSize:11,color:B.grey3,marginTop:4 }}>Shareable link — embeds live inside the campaign card.</div>
+              <div style={{marginBottom:20}}>
+                <div style={{fontSize:20,fontWeight:700,marginBottom:3}}>Overview</div>
+                <div style={{fontSize:13,color:B.grey2}}>Your full book of business across all campaigns and periods.</div>
               </div>
-              <div><label style={LS}>Affiliate Analytics URL</label><input {...inp("affiliateAnalyticsUrl")} placeholder="https://affiliate-platform.com/report/..." style={IS}/></div>
-            </Block>
-
-            <Block title="Documents & Uploads" accent={B.green}>
-              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:12 }}>
-                <FileZone label="Creator Spend CSV" accept=".csv" onFile={f=>parseCSV(f,"creator")} info={csv.creator||form.creatorCSV} color={B.blue} icon="🎨"/>
-                <FileZone label="Spark Spend CSV"   accept=".csv" onFile={f=>parseCSV(f,"spark")}   info={csv.spark||form.sparkCSV} color="#74b9e8" icon="✨"/>
-                <FileZone label="Spark Ads CSV"     accept=".csv" onFile={f=>parseCSV(f,"sparkAds")} info={csv.sparkAds||form.sparkAdsCSV} color="#74b9e8" icon="⚡"/>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:14}}>
+                <KpiCard label="Total Revenue" value={fmt(book.rev)} sub={`${campaigns.length} campaigns`} color={B.blue}/>
+                <KpiCard label="Total Profit" value={fmt(book.profit)} sub={pct(book.margin)+" margin"} color={mc(book.margin)}/>
+                <KpiCard label="Total Spend" value={fmt(book.spend)} sub="All cost lines"/>
+                <KpiCard label="Profit Margin" value={pct(book.margin)} sub="Book of business" color={mc(book.margin)}/>
+                <KpiCard label="Total Views" value={fmtN(book.views)} sub={`Active CPM: ${fmtD(book.activeCPM)}`} color={B.black}/>
               </div>
-              <div style={{ marginBottom:12 }}>
-                <div style={{ fontSize:11,color:B.grey3,fontWeight:600,letterSpacing:0.5,textTransform:"uppercase",marginBottom:8 }}>Affiliate Invoices</div>
-                {(form.invoices||[]).length>0&&<div style={{ display:"flex",gap:6,flexWrap:"wrap",marginBottom:8 }}>
-                  {form.invoices.map((f,i)=>(
-                    <div key={i} style={{ display:"flex",alignItems:"center",gap:5,background:B.greenLo,border:`1px solid ${B.green}25`,borderRadius:6,padding:"4px 9px" }}>
-                      <span style={{ fontSize:11,color:B.green }}>🧾 {f.name}</span>
-                      <button onClick={()=>setForm(p=>({...p,invoices:p.invoices.filter((_,j)=>j!==i)}))} style={{ background:"none",border:"none",color:B.grey3,cursor:"pointer",fontSize:12,padding:0 }}>✕</button>
+              <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:14}}>
+                <div style={{flex:1.2,minWidth:260,background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:"20px 22px"}}>
+                  <div style={{fontWeight:600,fontSize:14,marginBottom:14}}>Spend Breakdown</div>
+                  {(()=>{
+                    const cr=campaigns.reduce((a,c)=>a+(c.periods||[]).reduce((b,p)=>b+num(p.creatorSpend),0),0);
+                    const sp=campaigns.reduce((a,c)=>a+(c.periods||[]).reduce((b,p)=>b+num(p.sparkSpend),0),0);
+                    const af=campaigns.reduce((a,c)=>a+(c.periods||[]).reduce((b,p)=>b+(p.affiliates||[]).reduce((s,a)=>s+num(a.amount),0),0),0);
+                    return <><Bar label="Creator Spend" value={cr} max={book.rev} color={B.blue}/><Bar label="Spark Spend" value={sp} max={book.rev} color="#74b9e8"/><Bar label="Affiliate Spend" value={af} max={book.rev} color={B.yellow}/><Bar label="Profit" value={Math.max(0,book.profit)} max={book.rev} color={B.green}/><div style={{height:1,background:B.border,margin:"12px 0"}}/><div style={{display:"flex",gap:8}}><SmKpi label="Creator" value={fmt(cr)} color={B.blue}/><SmKpi label="Spark" value={fmt(sp)} color="#74b9e8"/><SmKpi label="Affiliate" value={fmt(af)} color={B.yellow}/></div></>;
+                  })()}
+                </div>
+                <div style={{flex:1,minWidth:240,background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:"20px 22px"}}>
+                  <div style={{fontWeight:600,fontSize:14,marginBottom:14}}>Top Campaigns by Profit</div>
+                  {campaigns.length===0&&<div style={{color:B.grey3,fontSize:13}}>No campaigns yet.</div>}
+                  {[...campaigns].map(c=>({...c,...campaignTotals(c)})).sort((a,b)=>b.profit-a.profit).slice(0,5).map((c,i)=>(
+                    <div key={c.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+                      <div style={{width:22,height:22,borderRadius:6,background:i===0?B.yellowLo:B.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:i===0?B.yellow:B.grey3,fontWeight:700,border:`1px solid ${B.border}`}}>#{i+1}</div>
+                      <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{c.name||"Unnamed"}</div><div style={{fontSize:11,color:B.grey2}}>{c.client} · {c.periods?.length||0} period{c.periods?.length!==1?"s":""}</div></div>
+                      <div style={{textAlign:"right"}}><div style={{fontSize:13,fontWeight:700,color:c.profit>=0?B.green:B.red}}>{fmt(c.profit)}</div><div style={{fontSize:11,color:mc(c.margin)}}>{pct(c.margin)}</div></div>
                     </div>
                   ))}
-                </div>}
-                <FileZone accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg" onFile={f=>addDoc(f,"invoices")} info={null} color={B.green} icon="🧾"/>
+                </div>
               </div>
-              <div>
-                <div style={{ fontSize:11,color:B.grey3,fontWeight:600,letterSpacing:0.5,textTransform:"uppercase",marginBottom:8 }}>Other Documents</div>
-                {(form.otherFiles||[]).length>0&&<div style={{ display:"flex",gap:6,flexWrap:"wrap",marginBottom:8 }}>
-                  {form.otherFiles.map((f,i)=>(
-                    <div key={i} style={{ display:"flex",alignItems:"center",gap:5,background:B.bg,border:`1px solid ${B.border}`,borderRadius:6,padding:"4px 9px" }}>
-                      <span style={{ fontSize:11,color:B.grey2 }}>📎 {f.name}</span>
-                      <button onClick={()=>setForm(p=>({...p,otherFiles:p.otherFiles.filter((_,j)=>j!==i)}))} style={{ background:"none",border:"none",color:B.grey3,cursor:"pointer",fontSize:12,padding:0 }}>✕</button>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                {STATUSES.map(s=>{
+                  const cs=campaigns.filter(c=>derivedStatus(c.periods)===s);
+                  const rev=cs.reduce((a,c)=>a+campaignTotals(c).rev,0);
+                  const profit=cs.reduce((a,c)=>a+campaignTotals(c).profit,0);
+                  return(
+                    <div key={s} style={{flex:1,minWidth:160,background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:"16px 18px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}>
+                        <div style={{width:7,height:7,borderRadius:"50%",background:SC[s]}}/><div style={{fontSize:12,fontWeight:600,color:SC[s]}}>{s}</div><div style={{marginLeft:"auto",fontSize:11,color:B.grey3}}>{cs.length} deals</div>
+                      </div>
+                      <div style={{display:"flex",gap:16}}>
+                        <div><div style={{color:B.grey3,fontSize:10,textTransform:"uppercase",letterSpacing:0.8,marginBottom:2}}>Revenue</div><div style={{fontSize:15,fontWeight:700}}>{fmt(rev)}</div></div>
+                        <div><div style={{color:B.grey3,fontSize:10,textTransform:"uppercase",letterSpacing:0.8,marginBottom:2}}>Profit</div><div style={{fontSize:15,fontWeight:700,color:profit>=0?B.green:B.red}}>{fmt(profit)}</div></div>
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            </>}
+
+            {tab==="Campaigns"&&<>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:16}}>
+                <div><div style={{fontSize:20,fontWeight:700,marginBottom:2}}>All Campaigns</div><div style={{fontSize:13,color:B.grey2}}>Click any campaign to expand.</div></div>
+              </div>
+              {campaigns.length===0&&(
+                <div style={{background:B.card,border:`1px solid ${B.border}`,borderRadius:10,padding:60,textAlign:"center"}}>
+                  <div style={{fontSize:32,marginBottom:10}}>📋</div>
+                  <div style={{fontSize:14,fontWeight:600,color:B.grey1,marginBottom:5}}>No campaigns yet</div>
+                  <div style={{fontSize:13,color:B.grey3}}>Click "+ New Campaign" to get started</div>
+                </div>
+              )}
+              {campaigns.map(c=>{
+                const T=campaignTotals(c);
+                const open=expanded===c.id;
+                const periods=c.periods||[];
+                const status=derivedStatus(periods);
+                return(
+                  <div key={c.id} style={{background:B.card,border:`1px solid ${open?B.blue:B.border}`,borderRadius:10,marginBottom:8,overflow:"hidden",transition:"border-color 0.2s",boxShadow:open?`0 0 0 3px ${B.blueLo}`:"none"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:12,padding:"14px 18px",cursor:"pointer"}} onClick={()=>setExpanded(open?null:c.id)}>
+                      <div style={{flex:2}}>
+                        <div style={{fontWeight:600,fontSize:14,marginBottom:2}}>{c.name||"Unnamed"}</div>
+                        <div style={{fontSize:12,color:B.grey2,display:"flex",alignItems:"center",gap:8}}>
+                          {c.client&&<span>{c.client}</span>}
+                          <span style={{background:B.bg,border:`1px solid ${B.border}`,borderRadius:4,padding:"1px 7px",fontSize:11,color:B.grey2}}>{periods.length} period{periods.length!==1?"s":""}</span>
+                          {periods.length>0&&<span style={{color:B.grey3,fontSize:11}}>{fmtDateRange(periods[0])}{periods.length>1?` → ${fmtDateRange(periods[periods.length-1])}`:""}  </span>}
+                        </div>
+                      </div>
+                      <span style={{fontSize:11,fontWeight:600,color:SC[status],background:SB[status],border:`1px solid ${SC[status]}28`,borderRadius:5,padding:"3px 9px"}}>{status}</span>
+                      {[{l:"Revenue",v:fmt(T.rev),col:B.black},{l:"Spend",v:fmt(T.spend),col:B.grey1},{l:"Profit",v:fmt(T.profit),col:mc(T.margin)},{l:"Margin",v:pct(T.margin),col:mc(T.margin)},{l:"Views",v:fmtN(T.views),col:B.black},{l:"Active CPM",v:fmtD(T.activeCPM),col:B.blue}].map(({l,v,col})=>(
+                        <div key={l} style={{textAlign:"right",minWidth:70}}>
+                          <div style={{fontSize:10,color:B.grey3}}>{l}</div>
+                          <div style={{fontWeight:700,fontSize:12,color:col}}>{v}</div>
+                        </div>
+                      ))}
+                      <div style={{color:B.grey3,fontSize:14,transition:"transform 0.2s",transform:open?"rotate(180deg)":"none"}}>▾</div>
+                    </div>
+                    {open&&(
+                      <div style={{borderTop:`1px solid ${B.border}`,background:B.bg,padding:18}}>
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
+                          <SmKpi label="Creator" value={fmt(T.cr)} color={B.blue}/>
+                          <SmKpi label="Spark" value={fmt(T.sp)} color="#74b9e8"/>
+                          <SmKpi label="Affiliate" value={fmt(T.af)} color={B.yellow}/>
+                          <SmKpi label="Total Spend" value={fmt(T.spend)} color={B.grey1}/>
+                          <SmKpi label="Net Profit" value={fmt(T.profit)} color={mc(T.margin)}/>
+                          <SmKpi label="Total Views" value={fmtN(T.views)} color={B.black}/>
+                          <SmKpi label="Active CPM" value={fmtD(T.activeCPM)} color={B.blue}/>
+                        </div>
+                        <div style={{background:B.white,border:`1px solid ${B.border}`,borderRadius:10,padding:"14px 16px",marginBottom:14}}>
+                          <div style={{fontSize:12,fontWeight:600,color:B.grey2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:12}}>Period Breakdown</div>
+                          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
+                            {periods.map(p=>{
+                              const pt=periodCalc(p);
+                              const isOpen=expandedPeriod[p.id];
+                              return(
+                                <button key={p.id} onClick={()=>setExpandedPeriod(prev=>({...prev,[p.id]:!prev[p.id]}))} style={{background:isOpen?mcBg(pt.margin):B.bg,border:`1px solid ${isOpen?mc(pt.margin):B.border}`,borderRadius:8,padding:"8px 14px",cursor:"pointer",textAlign:"left",transition:"all 0.15s",minWidth:120}}>
+                                  <div style={{fontSize:11,fontWeight:600,color:B.grey1,marginBottom:2}}>{fmtDateRange(p)||"No date"}</div>
+                                  <div style={{fontSize:14,fontWeight:700,color:mc(pt.margin)}}>{pct(pt.margin)}</div>
+                                  <div style={{fontSize:11,color:B.grey2}}>{fmt(pt.profit)}</div>
+                                  <div style={{fontSize:10,color:SC[p.status||"Active"],marginTop:2,fontWeight:600}}>{p.status||"Active"}</div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {periods.filter(p=>expandedPeriod[p.id]).map(p=>{
+                            const pt=periodCalc(p);
+                            return(
+                              <div key={p.id} style={{background:B.bg,border:`1px solid ${B.border}`,borderRadius:8,padding:"12px 14px",marginBottom:8}}>
+                                <div style={{fontWeight:600,fontSize:13,marginBottom:10}}>{fmtDateRange(p)}</div>
+                                <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
+                                  <SmKpi label="Revenue" value={fmt(pt.rev)}/><SmKpi label="Creator" value={fmt(pt.cr)} color={B.blue}/><SmKpi label="Spark" value={fmt(pt.sp)} color="#74b9e8"/><SmKpi label="Affiliate" value={fmt(pt.af)} color={B.yellow}/><SmKpi label="Profit" value={fmt(pt.profit)} color={mc(pt.margin)}/><SmKpi label="Margin" value={pct(pt.margin)} color={mc(pt.margin)}/><SmKpi label="Total Views" value={fmtN(pt.views)}/><SmKpi label="Active CPM" value={fmtD(pt.activeCPM)} color={B.blue}/><SmKpi label="Goal Views" value={pt.goalViews>0?fmtN(pt.goalViews):"—"} color={B.grey1}/>
+                                </div>
+                                {(p.affiliates||[]).length>0&&(
+                                  <div style={{marginTop:8}}>
+                                    <div style={{fontSize:10,fontWeight:700,color:B.grey3,textTransform:"uppercase",letterSpacing:0.8,marginBottom:6}}>Affiliate Partners</div>
+                                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                      {p.affiliates.map(a=>(
+                                        <div key={a.id} style={{background:B.yellowLo,border:`1px solid ${B.yellow}25`,borderRadius:6,padding:"4px 10px",fontSize:12}}>
+                                          <span style={{fontWeight:600,color:B.grey1}}>{a.name||"Partner"}</span>
+                                          <span style={{color:B.yellow,fontWeight:700,marginLeft:6}}>{fmt(num(a.amount))}</span>
+                                        </div>
+                                      ))}
+                                      <div style={{background:B.bg,border:`1px solid ${B.border}`,borderRadius:6,padding:"4px 10px",fontSize:12,color:B.grey2,fontWeight:600}}>Total: {fmt(pt.af)}</div>
+                                    </div>
+                                  </div>
+                                )}
+                                {p.notes&&<div style={{fontSize:12,color:B.grey1,marginTop:8,padding:"8px 10px",background:B.white,borderRadius:6,border:`1px solid ${B.border}`}}>{p.notes}</div>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {(c.analyticsUrl||c.affiliateAnalyticsUrl)&&(
+                          <div style={{background:B.white,border:`1px solid ${B.border}`,borderRadius:8,padding:"12px 14px",marginBottom:12}}>
+                            <div style={{fontSize:11,fontWeight:600,color:B.grey2,textTransform:"uppercase",letterSpacing:0.8,marginBottom:10}}>Analytics</div>
+                            <EmbedPanel url={c.analyticsUrl} label="Your Analytics Dashboard"/>
+                            <EmbedPanel url={c.affiliateAnalyticsUrl} label="Affiliate Analytics"/>
+                          </div>
+                        )}
+                        {[{l:"Findings",v:c.findings},{l:"Future Plans",v:c.future},{l:"What to Do Better",v:c.improvements}].some(x=>x.v)&&(
+                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                            {[{l:"Findings",v:c.findings},{l:"Future Plans",v:c.future},{l:"What to Do Better",v:c.improvements}].filter(x=>x.v).map(({l,v})=>(
+                              <div key={l} style={{background:B.white,borderRadius:8,padding:"10px 12px",border:`1px solid ${B.border}`}}>
+                                <div style={{fontSize:10,fontWeight:600,color:B.grey3,textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}}>{l}</div>
+                                <div style={{fontSize:12,color:B.grey1,lineHeight:1.6}}>{v}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{display:"flex",gap:8}}>
+                          <button onClick={()=>editCampaign(c)} style={{background:B.blueLo,border:`1px solid ${B.blue}28`,borderRadius:7,padding:"7px 16px",color:B.blue,cursor:"pointer",fontSize:12,fontWeight:600}}>✏️ Edit Campaign</button>
+                          <button onClick={()=>{if(window.confirm(`Delete "${c.name||"this campaign"}"?`))delCampaign(c.id);}} style={{background:"transparent",border:`1px solid ${B.border}`,borderRadius:7,padding:"7px 14px",color:B.red,cursor:"pointer",fontSize:12}}>Delete</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </>}
+
+            {tab==="Add / Edit"&&(
+              <div style={{maxWidth:780}}>
+                <div style={{marginBottom:20}}>
+                  <div style={{fontSize:20,fontWeight:700,marginBottom:3}}>{editing?"Edit Campaign":"New Campaign"}</div>
+                  <div style={{fontSize:13,color:B.grey2}}>Add periods to track month-by-month performance.</div>
+                </div>
+                <Block title="Campaign Info">
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                    <div><label style={LS}>Campaign Name</label><input {...inp("name")} placeholder="e.g. Nike Spring 2025" style={IS}/></div>
+                    <div><label style={LS}>Client / Brand</label><input {...inp("client")} placeholder="e.g. Nike" style={IS}/></div>
+                  </div>
+                </Block>
+                <Block title={`Periods — ${form.periods.length} total`} accent={B.blue}>
+                  <div style={{fontSize:12,color:B.grey2,marginBottom:14}}>Status per period. Active CPM and Goal Views auto-calculated.</div>
+                  {form.periods.map(p=>(
+                    <PeriodEditor key={p.id} period={p} onChange={updated=>updatePeriod(p.id,updated)} onDelete={()=>removePeriod(p.id)} canDelete={form.periods.length>1}/>
                   ))}
-                </div>}
-                <FileZone accept="*" onFile={f=>addDoc(f,"otherFiles")} info={null} color={B.grey2} icon="📎"/>
+                  <button onClick={addPeriod} style={{background:"transparent",border:`1px dashed ${B.blue}`,borderRadius:8,padding:"9px 18px",color:B.blue,cursor:"pointer",fontSize:13,fontWeight:600,width:"100%",marginTop:4}}>+ Add Period</button>
+                  {(()=>{
+                    const rev=form.periods.reduce((a,p)=>a+num(p.revenue),0);
+                    const spend=form.periods.reduce((a,p)=>a+periodCalc(p).spend,0);
+                    const views=form.periods.reduce((a,p)=>a+num(p.totalViews),0);
+                    const profit=rev-spend,margin=rev>0?(profit/rev)*100:0;
+                    const activeCPM=views>0?(rev/(views/1000)):0;
+                    if(rev+spend===0) return null;
+                    return <div style={{background:B.blueLo,border:`1px solid ${B.blueMid}`,borderRadius:8,padding:"11px 16px",marginTop:12,display:"flex",gap:24,alignItems:"center",flexWrap:"wrap"}}>
+                      <div style={{fontSize:10,color:B.blue,fontWeight:700,letterSpacing:0.8}}>CAMPAIGN TOTAL</div>
+                      {[{l:"REVENUE",v:fmt(rev),c:B.black},{l:"SPEND",v:fmt(spend),c:B.grey1},{l:"PROFIT",v:fmt(profit),c:mc(margin)},{l:"MARGIN",v:pct(margin),c:mc(margin)},{l:"VIEWS",v:fmtN(views),c:B.black},{l:"ACTIVE CPM",v:fmtD(activeCPM),c:B.blue}].map(({l,v,c})=>(
+                        <div key={l}><div style={{fontSize:9,color:B.grey3,textTransform:"uppercase",letterSpacing:1}}>{l}</div><div style={{fontWeight:700,color:c,fontSize:14}}>{v}</div></div>
+                      ))}
+                    </div>;
+                  })()}
+                </Block>
+                <Block title="Analytics Links" accent={B.blue}>
+                  <div style={{marginBottom:12}}><label style={LS}>Your Analytics Dashboard URL</label><input {...inp("analyticsUrl")} placeholder="https://your-dashboard.com/share/..." style={IS}/></div>
+                  <div><label style={LS}>Affiliate Analytics URL</label><input {...inp("affiliateAnalyticsUrl")} placeholder="https://affiliate-platform.com/report/..." style={IS}/></div>
+                </Block>
+                <Block title="Documents &amp; Uploads" accent={B.green}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:12}}>
+                    <FileZone label="Creator Spend CSV" accept=".csv" onFile={f=>parseCSV(f,"creator")} info={csv.creator||form.creatorCSV} color={B.blue} icon="🎨"/>
+                    <FileZone label="Spark Spend CSV" accept=".csv" onFile={f=>parseCSV(f,"spark")} info={csv.spark||form.sparkCSV} color="#74b9e8" icon="✨"/>
+                    <FileZone label="Spark Ads CSV" accept=".csv" onFile={f=>parseCSV(f,"sparkAds")} info={csv.sparkAds||form.sparkAdsCSV} color="#74b9e8" icon="⚡"/>
+                  </div>
+                  <div style={{marginBottom:12}}>
+                    <div style={{fontSize:11,color:B.grey3,fontWeight:600,letterSpacing:0.5,textTransform:"uppercase",marginBottom:8}}>Affiliate Invoices</div>
+                    {(form.invoices||[]).length>0&&<div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>{form.invoices.map((f,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:5,background:B.greenLo,border:`1px solid ${B.green}25`,borderRadius:6,padding:"4px 9px"}}><span style={{fontSize:11,color:B.green}}>🧾 {f.name}</span><button onClick={()=>setForm(p=>({...p,invoices:p.invoices.filter((_,j)=>j!==i)}))} style={{background:"none",border:"none",color:B.grey3,cursor:"pointer",fontSize:12,padding:0}}>✕</button></div>))}</div>}
+                    <FileZone accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg" onFile={f=>addDoc(f,"invoices")} info={null} color={B.green} icon="🧾"/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:11,color:B.grey3,fontWeight:600,letterSpacing:0.5,textTransform:"uppercase",marginBottom:8}}>Other Documents</div>
+                    {(form.otherFiles||[]).length>0&&<div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>{form.otherFiles.map((f,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:5,background:B.bg,border:`1px solid ${B.border}`,borderRadius:6,padding:"4px 9px"}}><span style={{fontSize:11,color:B.grey2}}>📎 {f.name}</span><button onClick={()=>setForm(p=>({...p,otherFiles:p.otherFiles.filter((_,j)=>j!==i)}))} style={{background:"none",border:"none",color:B.grey3,cursor:"pointer",fontSize:12,padding:0}}>✕</button></div>))}</div>}
+                    <FileZone accept="*" onFile={f=>addDoc(f,"otherFiles")} info={null} color={B.grey2} icon="📎"/>
+                  </div>
+                </Block>
+                <Block title="Campaign Notes &amp; Strategy" accent={B.blue}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+                    {[{l:"Findings",f:"findings",ph:"Key insights..."},{l:"Future Plans",f:"future",ph:"What's next..."},{l:"What to Do Better",f:"improvements",ph:"Lessons learned..."}].map(({l,f,ph})=>(
+                      <div key={f}><label style={LS}>{l}</label><textarea {...inp(f)} placeholder={ph} rows={3} style={{...IS,resize:"vertical",lineHeight:1.5}}/></div>
+                    ))}
+                  </div>
+                </Block>
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={save} style={{background:B.black,border:"none",borderRadius:8,padding:"10px 24px",color:B.white,cursor:"pointer",fontSize:13,fontWeight:600}}>{editing?"Save Changes":"Add Campaign"}</button>
+                  {editing&&<button onClick={()=>{setEditing(null);setForm(defaultCampaign());setTab("Campaigns");}} style={{background:"transparent",border:`1px solid ${B.border}`,borderRadius:8,padding:"10px 18px",color:B.grey2,cursor:"pointer",fontSize:13}}>Cancel</button>}
+                </div>
               </div>
-            </Block>
-
-            <Block title="Campaign Notes & Strategy" accent={B.blue}>
-              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12 }}>
-                {[{l:"Findings",f:"findings",ph:"Key insights..."},{l:"Future Plans",f:"future",ph:"What's next..."},{l:"What to Do Better",f:"improvements",ph:"Lessons learned..."}].map(({l,f,ph})=>(
-                  <div key={f}><label style={LS}>{l}</label><textarea {...inp(f)} placeholder={ph} rows={3} style={{ ...IS,resize:"vertical",lineHeight:1.5 }}/></div>
-                ))}
-              </div>
-            </Block>
-
-            <div style={{ display:"flex",gap:10 }}>
-              <button onClick={save} style={{ background:B.black,border:"none",borderRadius:8,padding:"10px 24px",color:B.white,cursor:"pointer",fontSize:13,fontWeight:600 }}>
-                {editing?"Save Changes":"Add Campaign"}
-              </button>
-              {editing&&<button onClick={()=>{setEditing(null);setForm(defaultCampaign());setTab("Campaigns");}} style={{ background:"transparent",border:`1px solid ${B.border}`,borderRadius:8,padding:"10px 18px",color:B.grey2,cursor:"pointer",fontSize:13 }}>Cancel</button>}
-            </div>
+            )}
           </div>
-        )}
-      </div>
-    </div>
-  );
-}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+  </script>
+</body>
+</html>
