@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SideShift P&L Tracker</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Inter',-apple-system,sans-serif;background:#F4F6F8}
+    input:focus,textarea:focus{border-color:#218AC3!important;outline:none;box-shadow:0 0 0 3px #EFF6FB}
+    input::placeholder,textarea::placeholder{color:#9CA3AF}
+    @keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react,env">
+    const { useState, useEffect, useRef } = React;
+
+    // ── PASTE THE FULL TRACKER CODE HERE ──
+    // 1. Go to the P&L Tracker artifact in Claude
+    // 2. Click the "..." menu on the artifact → "View Source" or copy all code
+    // 3. Paste it here, replacing this comment block
+    // 4. Remove the line "import { useState, useEffect, useRef } from 'react';"
+    //    and "import * as Papa from 'papaparse';"  (already loaded via CDN above)
+    // 5. Change "export default function App()" to just "function App()"
+    // 6. Keep the ReactDOM.createRoot line below
+
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+  </script>
+</body>
+</html>
