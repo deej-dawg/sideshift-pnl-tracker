@@ -18,6 +18,21 @@
   </style>
 </head>
 <body>
+  
+  <script>
+    (function(){
+      var PASS = 'daddydeej';
+      var key = 'ss_auth';
+      if(sessionStorage.getItem(key) !== PASS) {
+        var entered = prompt('🔒 SideShift P&L Tracker\n\nEnter password to continue:');
+        if(entered !== PASS) {
+          document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:Inter,sans-serif;background:#F4F6F8;"><div style="text-align:center"><div style="font-size:32px;margin-bottom:12px">🔒</div><div style="font-size:18px;font-weight:700;color:#111">Access Denied</div><div style="color:#6B7280;margin-top:8px;font-size:14px">Incorrect password.</div><button onclick="location.reload()" style="margin-top:16px;background:#218AC3;color:#fff;border:none;border-radius:8px;padding:10px 24px;cursor:pointer;font-size:14px;font-family:inherit;">Try Again</button></div></div>';
+          return;
+        }
+        sessionStorage.setItem(key, PASS);
+      }
+    })();
+  </script>
   <div id="root"></div>
   <script type="text/babel" data-presets="react,env">
     const { useState, useEffect, useRef } = React;
