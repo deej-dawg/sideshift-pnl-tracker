@@ -390,7 +390,8 @@ export default function App() {
   const [liveData,setLiveData]=useState(null);
   const [liveLoading,setLiveLoading]=useState(false);
   const [liveError,setLiveError]=useState(null);
-  const [selectedProgram,setSelectedProgram]=useState("all");
+  const [programs,setPrograms]=useState([]);
+  const [lastRefresh,setLastRefresh]=useState(null);
 
   useEffect(()=>{const s=localStorage.getItem("ss_mp_v1");if(s)try{setCampaigns(JSON.parse(s))}catch{};setReady(true);},[]);
   useEffect(()=>{if(ready)localStorage.setItem("ss_mp_v1",JSON.stringify(campaigns));},[campaigns,ready]);
